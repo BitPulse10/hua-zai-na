@@ -651,7 +651,7 @@ function renderReports(){
 function renderSettings(force=false){
   const form=$('#salaryForm');if(force||form.dataset.loaded!=='true'){if(form.dataset.dirty==='true')showToast('工资设置已重新载入');$('#salaryInput').value=(state.salaryCents/100).toFixed(2);$('#paydayInput').value=state.payday;$('#paydayHourInput').value=state.paydayHour;form.dataset.loaded='true';form.dataset.dirty='false'}
   $('#dataStorageDescription').textContent=nativeStorage?'保存在本机，可导出 JSON 备份':'保存在此浏览器，可导出 JSON 备份';
-  $('#privacyNote').textContent=nativeStorage?'留一笔 2.0.0 · 数据保存在本机':'数据只保存在此浏览器 · 不需要注册 · 留一笔 2.0.0';
+  $('#privacyNote').textContent=nativeStorage?'花在哪 2.0.1 · 数据保存在本机':'数据只保存在此浏览器 · 不需要注册 · 花在哪 2.0.1';
   const net=state.salaryCents,total=allocationTotal(),current=currentCycleAllocation(),over=total-net,currentOver=current-net;
   $('#salaryAllocationHelp').textContent=over>0||currentOver>0?`${currentOver>0?`本期已分配超出月到手工资 ${money(currentOver)}。`:''}${over>0?`下期计划分配超出月到手工资 ${money(over)}。`:''}请削减钱包额度或调整月到手工资。`:`本期已分配 ${money(current)}；下期计划分配 ${money(total)}，预计未分配 ${money(net-total)}。`;
   $('#nextRefreshText').textContent=`下次自动刷新：${scheduleLabel(nextScheduledAt())}。应用重新打开时会补齐漏过的发薪周期和到期账单。`;
@@ -898,7 +898,7 @@ function deleteEntry(id){
 }
 
 function exportData(){
-  const exportedAt=Date.now(),filename=`留一笔备份-${dateISO(new Date())}.json`;
+  const exportedAt=Date.now(),filename=`花在哪备份-${dateISO(new Date())}.json`;
   if(nativeStorage){
     if(typeof nativeBridge.exportLedger!=='function')return showToast('此 Android 版本不支持导出备份');
     pendingNativeExportAt=exportedAt;try{nativeBridge.exportLedger(JSON.stringify({...state,lastExportAt:exportedAt}),filename);showToast('正在准备备份…')}catch(error){pendingNativeExportAt=null;showToast(`备份导出失败：${error.message||'请重试'}`)}return;

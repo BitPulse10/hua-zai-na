@@ -105,7 +105,7 @@ if ($upgradeDigest -ne $oldDigest) {
 
 $delivery = Join-Path $pocketRoot 'delivery\migration'
 New-Item -ItemType Directory -Force -Path $delivery | Out-Null
-$destination = Join-Path $delivery '留一笔-2.0.0-旧debug版数据迁移.apk'
+$destination = Join-Path $delivery 'hua-zai-na-2.0.1-legacy-migration.apk'
 Copy-Item -LiteralPath $apk -Destination $destination -Force
 Write-Output "Legacy data migration APK ready: $destination"
 Write-Output "Verified matching legacy signer SHA-256: $upgradeDigest"

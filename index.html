@@ -8,11 +8,11 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
-  <title>留一笔 · 预算记账</title>
+  <title>花在哪 · 预算记账</title>
 </head>
 <body>
   <div class="app-shell">
-    <header class="topbar"><a class="brand" href="#wallets" aria-label="留一笔首页"><span class="brand-mark">留</span><span>留一笔<small>把钱花在心里有数的地方</small></span></a></header>
+    <header class="topbar"><a class="brand" href="#wallets" aria-label="花在哪首页"><img class="brand-mark" src="icon.svg" alt=""><span>花在哪<small>把钱花在心里有数的地方</small></span></a></header>
     <div id="storageWarning" class="storage-warning" role="alert" hidden></div>
     <main>
       <section class="page active" id="walletsPage">
@@ -65,7 +65,7 @@
           <p class="field-help" id="backupStatus">尚未备份</p>
           <p class="field-help">离线使用。关闭页面期间不会后台提醒；重新打开时会补齐到期项目和发薪周期。</p>
         </section>
-        <p class="privacy-note" id="privacyNote">数据只保存在此浏览器 · 不需要注册 · 留一笔 2.0.0</p>
+        <p class="privacy-note" id="privacyNote">数据只保存在此浏览器 · 不需要注册 · 花在哪 2.0.1</p>
       </section>
     </main>
     <nav class="bottom-nav" aria-label="主导航"><button class="nav-item active" data-page="walletsPage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6.5h15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-12a2 2 0 0 1 2-2h14M3 8h18m-5 5h3"/></svg>钱包</button><button class="nav-item" data-page="billsPage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3.5h12v17l-3-2-3 2-3-2-3 2zM9 8h6m-6 4h6m-6 4h3"/></svg>账单</button><button class="nav-item" data-page="settingsPage"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v2m0 13v2m8.5-8.5h-2m-13 0h-2m14.5-6-1.4 1.4m-9.2 9.2L6 18m12 0-1.4-1.4M7.4 7.4 6 6m10 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"/></svg>设置</button></nav>
@@ -74,7 +74,7 @@
   <input id="importFile" type="file" accept="application/json,.json" hidden>
   <section class="onboarding" id="onboarding" aria-labelledby="setupTitle" hidden>
     <div class="onboarding-shell">
-      <div class="onboarding-brand"><span class="brand-mark">留</span><span>留一笔<small>按自己的节奏开始</small></span></div>
+      <div class="onboarding-brand"><img class="brand-mark" src="icon.svg" alt=""><span>花在哪<small>按自己的节奏开始</small></span></div>
       <div class="setup-progress" aria-label="初始化步骤"><span data-setup-progress="1"></span><span data-setup-progress="2"></span><span data-setup-progress="3"></span></div>
       <div class="setup-step" id="setupStep1">
         <p class="eyebrow">第 1 步 · 工资周期</p><h1 id="setupTitle">先设定你的发薪节奏</h1><p class="setup-intro">输入实际到手工资和发薪日。金额留空时不会按 0 元开始。</p>

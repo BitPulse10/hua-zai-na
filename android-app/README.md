@@ -1,4 +1,4 @@
-# 留一笔 Android
+# 花在哪 Android
 
 Android 安装包在设备上离线运行网页记账界面。WebView 只从 APK 内的白名单资源加载 `index.html`、`app.js`、`styles.css`、`icon.svg`、`manifest.json`，以及上级目录中存在时的 `android-runtime.js`；Gradle 每次构建时从上级项目目录同步，不维护另一份静态网页。页面使用 `https://budget-pocket.local/` 本地虚拟域名映射 APK assets，不启用 `file://`、通用文件访问或网络权限。Android 桥由当前 `app.js` 直接调用。
 
@@ -15,7 +15,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 依赖已预先缓存时可加 `-Offline`，避免 Gradle 检查网络元数据。
 
-正式 APK 使用稳定包名 `cn.liuyibi.budget.offline`，可与旧版 `cn.liuyibi.budget` 并存。首次运行会在 `local-signing/` 创建持久 release keystore，并在被 Git 忽略的 `signing.properties` 保存本地签名设置。每次构建都会要求 release 签名、运行 Android `apksigner verify`，成功后输出到 `../delivery/留一笔-2.0.0.apk`。把 `local-signing/` 和 `signing.properties` 一并保存在安全备份中；丢失原签名密钥后，后续版本不能作为同一应用更新。
+正式 APK 使用稳定包名 `cn.liuyibi.budget.offline`，可与旧版 `cn.liuyibi.budget` 并存。首次运行会在 `local-signing/` 创建持久 release keystore，并在被 Git 忽略的 `signing.properties` 保存本地签名设置。每次构建都会要求 release 签名、运行 Android `apksigner verify`，成功后输出到 `../delivery/hua-zai-na-2.0.1.apk`。把 `local-signing/` 和 `signing.properties` 一并保存在安全备份中；丢失原签名密钥后，后续版本不能作为同一应用更新。
 
 也可不生成本地密钥文件，改用 `LIUYIBI_RELEASE_STORE_FILE`、`LIUYIBI_RELEASE_STORE_PASSWORD`、`LIUYIBI_RELEASE_KEY_ALIAS` 和 `LIUYIBI_RELEASE_KEY_PASSWORD` 配置外部 keystore。
 

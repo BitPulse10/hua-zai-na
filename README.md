@@ -1,14 +1,16 @@
-# 留一笔
+# 花在哪
+
+<img src="docs/images/app-icon.png" alt="花在哪图标" width="72" height="72">
 
 **把工资分进几个钱包，花钱时点钱包、填金额。**
 
 一个简单、实用的单机记账应用，支持 Android 和浏览器。日常操作只有一条：**打开 → 点钱包 → 输入花了多少 → 保存**。钱包余额随之减少，想知道钱花在哪、还剩多少，直接看钱包或账单。
 
-[下载安卓安装包](https://github.com/BitPulse10/liuyibi/releases/latest) · [使用说明](docs/usage.md) · [Android 构建说明](android-app/README.md)
+[下载安卓安装包](https://github.com/BitPulse10/hua-zai-na/releases/latest) · [使用说明](docs/usage.md) · [Android 构建说明](android-app/README.md)
 
 ## 为什么做它
 
-发工资后，很多人已经知道这笔钱要怎么用：一部分日常花，一部分交房租，一部分存起来。留一笔把这个安排直接做成首页的钱包。先安排钱的用途，再从对应的钱包记消费。
+发工资后，很多人已经知道这笔钱要怎么用：一部分日常花，一部分交房租，一部分存起来。花在哪把这个安排直接做成首页的钱包。先安排钱的用途，再从对应的钱包记消费。
 
 ## 简单，具体体现在哪
 
@@ -50,7 +52,7 @@
 
 ### Android
 
-到 [Releases](https://github.com/BitPulse10/liuyibi/releases/latest) 下载 APK，传到手机后安装。支持 Android 6.0 及以上版本，首次启动按引导填写工资和发薪日，再创建钱包，也可以导入已有 JSON 备份。
+到 [Releases](https://github.com/BitPulse10/hua-zai-na/releases/latest) 下载 APK，传到手机后安装。支持 Android 6.0 及以上版本，首次启动按引导填写工资和发薪日，再创建钱包，也可以导入已有 JSON 备份。
 
 ### 浏览器
 
@@ -67,7 +69,7 @@ python -m http.server 8787
 - 计划消费不会连接银行或支付平台实际扣款。
 - 应用关闭后不会后台执行或发送系统通知；重新打开、回到前台时会补齐错过的发薪周期和到期计划。
 - 数据不自动上传或同步。卸载 Android 应用、清除应用数据或清理浏览器站点数据前，请先导出备份。
-- 本次 Android 2.0.0 已完成发布构建、签名校验和手机尺寸界面预览，尚未完成安卓实机验证。
+- 本次 Android 2.0.1 已完成发布构建、签名校验和手机尺寸界面预览，尚未完成安卓实机验证。
 - 正式版可与早期旧版 Android 应用并存。旧版账本不能跨应用自动读取，请保留旧应用；迁移限制见 [Android 说明](android-app/README.md#从旧版-apk-转移数据)。
 
 ## 源码与构建

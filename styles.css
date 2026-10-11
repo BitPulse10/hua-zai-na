@@ -37,7 +37,7 @@ input:disabled,select:disabled,button:disabled{cursor:not-allowed;opacity:.52}
 .topbar{height:68px;border-color:var(--line)}
 .brand{gap:11px;color:var(--ink);font-size:16px;font-weight:700}
 .brand small{color:var(--muted);font-size:11px}
-.brand-mark{width:40px;height:40px;border-radius:14px;background:#10233F;color:#fff}
+.brand-mark{display:block;flex:none;width:40px;height:40px;object-fit:contain;border-radius:14px;background:transparent}
 .page-heading{margin:28px 0 20px}
 .page-heading h1{font-size:26px;font-weight:700;letter-spacing:-.035em}
 .eyebrow{color:#66758A;font-size:12px;font-weight:650;letter-spacing:.03em}

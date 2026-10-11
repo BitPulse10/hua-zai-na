@@ -69,7 +69,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $delivery = Join-Path (Split-Path -Parent $projectRoot) 'delivery'
 New-Item -ItemType Directory -Force -Path $delivery | Out-Null
-$destination = Join-Path $delivery '留一笔-2.0.0.apk'
+$destination = Join-Path $delivery 'hua-zai-na-2.0.1.apk'
 Copy-Item -LiteralPath $apk -Destination $destination -Force
 Write-Output "Signed release APK ready: $destination"
 $verification | ForEach-Object { Write-Output $_ }
