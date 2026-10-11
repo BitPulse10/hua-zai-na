@@ -1,0 +1,128 @@
+import java.util.Properties
+
+plugins {
+    id 'com.android.application'
+}
+
+def pocketRoot = rootProject.projectDir.parentFile
+def signingPropertiesFile = rootProject.file('signing.properties')
+def releaseSigningProperties = new Properties()
+if (signingPropertiesFile.isFile()) {
+    signingPropertiesFile.withInputStream { releaseSigningProperties.load(it) }
+}
+def signingProperty = { String key, String environmentName ->
+    releaseSigningProperties.getProperty(key) ?: System.getenv(environmentName)
+}
+def releaseStorePath = signingProperty('storeFile', 'LIUYIBI_RELEASE_STORE_FILE')
+def releaseStorePassword = signingProperty('storePassword', 'LIUYIBI_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = signingProperty('keyAlias', 'LIUYIBI_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = signingProperty('keyPassword', 'LIUYIBI_RELEASE_KEY_PASSWORD')
+def releaseSigningConfigured = [releaseStorePath, releaseStorePassword, releaseKeyAlias, releaseKeyPassword]
+        .every { value -> value != null && !value.trim().isEmpty() }
+def migrationStorePath = findProperty('liuyibiMigrationStoreFile') ?: System.getenv('LIUYIBI_MIGRATION_STORE_FILE')
+def migrationStorePassword = System.getenv('LIUYIBI_MIGRATION_STORE_PASSWORD') ?: 'android'
+def migrationKeyAlias = System.getenv('LIUYIBI_MIGRATION_KEY_ALIAS') ?: 'androiddebugkey'
+def migrationKeyPassword = System.getenv('LIUYIBI_MIGRATION_KEY_PASSWORD') ?: 'android'
+def migrationSigningConfigured = migrationStorePath != null && !migrationStorePath.toString().trim().isEmpty()
+
+def syncedWebAssets = layout.buildDirectory.dir('generated/pocketWebAssets')
+tasks.register('syncPocketWebAssets', Sync) {
+    from(pocketRoot) {
+        include 'index.html', 'app.js', 'styles.css', 'icon.svg', 'manifest.json', 'android-runtime.js'
+    }
+    into(syncedWebAssets.map { it.dir('web') })
+}
+
+android {
+    namespace 'cn.liuyibi.budget'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'cn.liuyibi.budget'
+        minSdk 23
+        targetSdk 35
+        versionCode 2
+        versionName '2.0.0'
+    }
+
+    sourceSets {
+        main.assets.srcDir(syncedWebAssets)
+    }
+
+    signingConfigs {
+        if (releaseSigningConfigured) {
+            release {
+                storeFile rootProject.file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+        if (migrationSigningConfigured) {
+            migration {
+                storeFile rootProject.file(migrationStorePath)
+                storePassword migrationStorePassword
+                keyAlias migrationKeyAlias
+                keyPassword migrationKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            applicationIdSuffix '.offline'
+            minifyEnabled false
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig null
+            }
+        }
+        upgrade {
+            initWith debug
+            versionNameSuffix '-migration'
+            debuggable false
+            if (migrationSigningConfigured) {
+                signingConfig signingConfigs.migration
+            } else {
+                signingConfig null
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn('syncPocketWebAssets')
+}
+
+tasks.register('verifyReleaseSigningConfiguration') {
+    doLast {
+        if (!releaseSigningConfigured) {
+            throw new GradleException('Release APK signing is required. Configure android-app/signing.properties or the LIUYIBI_RELEASE_* environment variables.')
+        }
+        if (!rootProject.file(releaseStorePath).isFile()) {
+            throw new GradleException("Release keystore not found: ${rootProject.file(releaseStorePath)}")
+        }
+    }
+}
+
+tasks.register('verifyMigrationSigningConfiguration') {
+    doLast {
+        if (!migrationSigningConfigured || !rootProject.file(migrationStorePath).isFile()) {
+            throw new GradleException('The migration APK needs the existing legacy debug keystore. Pass -PliuyibiMigrationStoreFile=<keystore path>.')
+        }
+    }
+}
+
+tasks.matching { it.name == 'assembleRelease' || it.name == 'bundleRelease' }.configureEach {
+    dependsOn('verifyReleaseSigningConfiguration')
+}
+
+tasks.matching { it.name == 'assembleUpgrade' || it.name == 'bundleUpgrade' }.configureEach {
+    dependsOn('verifyMigrationSigningConfiguration')
+}

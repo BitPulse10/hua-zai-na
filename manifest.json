@@ -1,0 +1,10 @@
+{
+  "name": "留一笔 · 预算记账",
+  "short_name": "留一笔",
+  "description": "按发薪周期分配预算，轻松记录每笔开销。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f6f5f0",
+  "theme_color": "#f6f5f0",
+  "icons": [{"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]
+}
