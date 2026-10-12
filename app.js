@@ -9,7 +9,7 @@ const COLORS = ['#78966a','#cf9a58','#6d929a','#ba765d','#9179a9','#5e997e','#c4
 const SETUP_DRAFT_KEY = 'liuyibi-setup-draft-v1';
 const $ = (selector,root=document)=>root.querySelector(selector);
 const $$ = (selector,root=document)=>[...root.querySelectorAll(selector)];
-let selectedColor=COLORS[0], selectedReport='month', selectedCycleId='', selectedYear=new Date().getFullYear(), selectedDay='', selectedMonthIndex=0, detailFundId='', toastTimer=0, confirmAction=null, storageBlocked=false, storageWritable=true, onboardingNeeded=false, setupDraft=null, nativeBridge=null, nativeStorage=false, pendingNativeExportAt=null, persistenceFailureActive=false, lastPersistedState=null, state;
+let selectedColor=COLORS[0], selectedReport='month', selectedCycleId='', selectedYear=new Date().getFullYear(), selectedDay='', selectedMonthIndex=0, detailFundId='', toastTimer=0, confirmAction=null, activeSelectPicker=null, storageBlocked=false, storageWritable=true, onboardingNeeded=false, setupDraft=null, nativeBridge=null, nativeStorage=false, pendingNativeExportAt=null, persistenceFailureActive=false, lastPersistedState=null, state;
 
 function newId(){return globalThis.crypto?.randomUUID?.()||`${Date.now().toString(36)}-${Math.random().toString(36).slice(2,11)}`}
 function toCents(value){const n=Number(value);if(!Number.isFinite(n)||Math.abs(n)>9e12)return null;const c=Math.round(n*100);return Number.isSafeInteger(c)?c:null}
@@ -40,7 +40,7 @@ function makeCycle(startAt,origin='scheduled',scheduledKey=null){
   const allocations={};
   for(const f of state.funds)if(!f.disabledAt)allocations[f.id]={type:f.type,amountCents:f.type==='fixed'?f.allowanceCents:f.type==='increment'?f.contributionCents:0};
   const salarySnapshot={payrollKey:payrollKeyFromStart(startAt),netCents:state.salaryCents};
-  return {id:cycleIdAt(startAt),startAt,endAt:null,origin,scheduledKey,salaryCents:state.salaryCents,salarySnapshot,payday:state.payday,paydayHour:state.paydayHour,allocations,overdrafts:[],surplusExcludedFundIds:[]};
+  return {id:cycleIdAt(startAt),startAt,endAt:null,origin,scheduledKey,salaryCents:state.salaryCents,salarySnapshot,payday:state.payday,paydayHour:state.paydayHour,allocations,overdrafts:[],surplusExcludedFundIds:[],budgetAdjustments:[]};
 }
 function openCycle(){return [...state.cycles].filter(c=>c.endAt==null).sort((a,b)=>b.startAt-a.startAt)[0]||null}
 
@@ -160,6 +160,7 @@ function validateV5(raw){
   for(const cycle of copy.cycles){
     if(cycle.surplusExcludedFundIds!==undefined&&(!Array.isArray(cycle.surplusExcludedFundIds)||cycle.surplusExcludedFundIds.some(id=>typeof id!=='string')))throw new Error('备份中的周期盈余排除标记无效');
     if(cycle.overdrafts!==undefined){if(!Array.isArray(cycle.overdrafts))throw new Error('备份中的待处理超支记录无效');const ids=new Set();for(const item of cycle.overdrafts)if(!item||typeof item.sourceFundId!=='string'||!item.sourceFundId||typeof item.sourceFundName!=='string'||!item.sourceFundName||!integer(item.amountCents)||item.amountCents<=0||ids.has(item.sourceFundId))throw new Error('备份中的待处理超支记录无效');else ids.add(item.sourceFundId)}
+    if(cycle.budgetAdjustments!==undefined&&(!Array.isArray(cycle.budgetAdjustments)||cycle.budgetAdjustments.some(item=>!item||typeof item.id!=='string'||!Number.isFinite(item.timestamp)||!['transfer','change','release'].includes(item.kind)||!Number.isSafeInteger(item.amountCents)||item.amountCents<0)))throw new Error('备份中的预算调整记录无效');
   }
   const adjustmentKinds=new Set(['overdraft-settlement','overdraft-adjust','overdraft-transfer']);
   for(const entry of copy.entries)if(adjustmentKinds.has(entry.kind)&&(!entry||typeof entry.sourceCycleId!=='string'||!entry.sourceCycleId||typeof entry.sourceFundId!=='string'||!entry.sourceFundId||!Number.isSafeInteger(entry.amountCents)||entry.amountCents<=0))throw new Error('备份中的超支处理流水无效');
@@ -303,6 +304,7 @@ function enableFund(id){
   persist();showToast('钱包已恢复；本期额度不补发，下个新周期开始重新参与刷新和计划')
 }
 function reconcileClosedCycleSurpluses(){
+  reconcileDeletedFundBudgets();
   const settledIds=new Set([...state.entries.filter(e=>e.kind==='surplus-out').map(e=>e.cycleId),...state.savingsEntries.filter(e=>e.kind==='surplus-in').map(e=>e.sourceCycleId)]);
   const cycles=state.cycles.filter(c=>c.endAt!=null&&(Number.isFinite(c.surplusSettledAt)||settledIds.has(c.id))).sort((a,b)=>a.endAt-b.endAt);
   for(const cycle of cycles){if(!Number.isFinite(cycle.surplusSettledAt))cycle.surplusSettledAt=cycle.endAt;if(!cycle.surplusSettlementCycleId){const existing=state.entries.find(e=>e.kind==='surplus-out'&&e.cycleId===cycle.id)||state.savingsEntries.find(e=>e.kind==='surplus-in'&&e.sourceCycleId===cycle.id),successor=state.cycles.find(c=>c.startAt===cycle.endAt);cycle.surplusSettlementCycleId=existing?.settlementCycleId||successor?.id||null}cycle.surplusExcludedFundIds||=[];cycle.overdrafts||=[];refreshFixedSurplusSettlement(cycle)}
@@ -379,6 +381,8 @@ function allocationForCycle(cycle,fundId){const a=cycle?.allocations?.[fundId];r
 function plannedTakeHomeCents(){return state.salaryCents}
 function allocationTotal(){return state.funds.filter(f=>!f.disabledAt).reduce((s,f)=>s+(f.type==='fixed'?f.allowanceCents:f.type==='increment'?f.contributionCents:0),0)}
 function currentCycleAllocation(){const cycle=openCycle();if(!cycle)return 0;let total=Object.entries(cycle.allocations||{}).reduce((sum,[id,a])=>sum+(a?.type==='fixed'?(a.amountCents||0):0),0);for(const [id,a]of Object.entries(cycle.allocations||{}))if(a?.type==='increment')total+=state.entries.filter(e=>e.fundId===id&&e.kind==='increment'&&e.timestamp>=cycle.startAt&&e.timestamp<(cycle.endAt??Infinity)).reduce((sum,e)=>sum+e.amountCents,0);return total}
+function currentFundBudget(fund){const cycle=openCycle(),snapshot=cycle?.allocations?.[fund.id];return fund.type==='fixed'&&snapshot?.type==='fixed'?snapshot.amountCents:fund.allowanceCents}
+function recordBudgetAdjustment(event){const cycle=openCycle();if(!cycle)return;cycle.budgetAdjustments||=[];cycle.budgetAdjustments.push({id:newId(),timestamp:Date.now(),...event})}
 function entriesForFund(fundId){return state.entries.filter(e=>e.fundId===fundId)}
 function fundBalanceAt(fund,timestamp){
   const priority=e=>e.kind==='overdraft-transfer'?-1:['fixed-base','reset'].includes(e.kind)?0:e.kind==='adjust'?1:e.kind==='transfer-in'||e.kind==='savings-in'?2:3;
@@ -389,7 +393,7 @@ function fundBalanceAt(fund,timestamp){
     return base==null?fund.allowanceCents:balance;
   }
   let balance=0;
-  for(const e of rows){if(e.kind==='opening'||e.kind==='increment'||e.kind==='topup'||e.kind==='transfer-in'||e.kind==='savings-in'||e.kind==='extra-savings'||e.kind==='overdraft-adjust')balance+=e.amountCents;else if(e.kind==='expense'||e.kind==='transfer-out'||e.kind==='overdraft-settlement')balance-=e.amountCents}
+  for(const e of rows){if(e.kind==='opening'||e.kind==='increment'||e.kind==='topup'||e.kind==='transfer-in'||e.kind==='savings-in'||e.kind==='extra-savings'||e.kind==='overdraft-adjust')balance+=e.amountCents;else if(e.kind==='adjust'&&e.reason==='balance-reconciliation')balance+=e.amountCents;else if(e.kind==='expense'||e.kind==='transfer-out'||e.kind==='overdraft-settlement')balance-=e.amountCents}
   return balance;
 }
 function savingsBalanceAt(timestamp=Date.now()){return state.savingsEntries.filter(e=>e.timestamp<=timestamp).reduce((sum,e)=>sum+(e.kind==='surplus-in'||e.kind==='overdraft-adjust'?e.amountCents:e.kind==='expense'||e.kind==='transfer-out'||e.kind==='overdraft-settlement'?-e.amountCents:0),0)}
@@ -403,7 +407,15 @@ function getAccount(id){return state.accounts.find(a=>a.id===id)||null}
 function allReportEntries(){
   const accountExpenses=state.accountEntries.filter(e=>e.kind==='expense').map(e=>({id:`account-${e.id}`,accountLedgerId:e.id,accountId:e.accountId,fundId:`account:${e.accountId}`,fundName:`${e.accountName||getAccount(e.accountId)?.name||'账户'}（账户）`,kind:'expense',date:e.date,timestamp:e.timestamp,amountCents:e.amountCents,note:e.note||'账户支出',cycleId:cycleForTimestamp(e.timestamp).id}));
   const savingsExpenses=state.savingsEntries.filter(e=>e.kind==='expense').map(e=>({id:`savings-${e.id}`,savingsEntryId:e.id,fundId:'savings',fundName:'累计结余',kind:'expense',date:e.date,timestamp:e.timestamp,amountCents:e.amountCents,note:e.note||'累计结余支出',cycleId:cycleForTimestamp(e.timestamp).id}));
-  return [...state.entries,...accountExpenses,...savingsExpenses];
+  const budgetEntries=state.cycles.flatMap(c=>(c.budgetAdjustments||[]).flatMap(event=>{
+    const date=dateISO(new Date(event.timestamp)),rows=[];
+    if(event.kind==='transfer'){
+      rows.push({id:`budget-${event.id}-out`,fundId:event.sourceFundId,fundName:event.sourceFundName,kind:'budget-adjustment',date,timestamp:event.timestamp,amountCents:event.amountCents,note:`预算调出至 ${event.targetFundName}`,budgetSign:-1,cycleId:c.id});
+      rows.push({id:`budget-${event.id}-in`,fundId:event.targetFundId,fundName:event.targetFundName,kind:'budget-adjustment',date,timestamp:event.timestamp,amountCents:event.amountCents,note:`预算来自 ${event.sourceFundName}`,budgetSign:1,cycleId:c.id});
+    }else rows.push({id:`budget-${event.id}`,fundId:event.fundId,fundName:event.fundName,kind:'budget-adjustment',date,timestamp:event.timestamp,amountCents:event.amountCents,note:event.note,budgetSign:event.kind==='release'?1:event.budgetSign||0,cycleId:c.id});
+    return rows;
+  }));
+  return [...state.entries,...accountExpenses,...savingsExpenses,...budgetEntries];
 }
 function accountDetailKind(entry){return ({opening:'已储蓄额度', 'provident-credit':'公积金实际到账','medical-credit':'医保实际划入',expense:'账户消费','transfer-out':'提取到钱包'})[entry.kind]||'账户流水'}
 function periodSpendForFund(fundId,rows){return sumExpenses(rows,fundId)}
@@ -415,7 +427,9 @@ function fundNameFor(id){return getFund(id)?.name||state.entries.find(e=>e.fundI
 function allFundFilters(){const map=new Map();for(const f of state.funds)map.set(f.id,f.name);for(const a of state.accounts)map.set(`account:${a.id}`,`${a.name}（账户）`);for(const e of allReportEntries())if(!map.has(e.fundId))map.set(e.fundId,e.fundName||'已删除钱包');return [...map.entries()]}
 function showToast(message,force=false){if(persistenceFailureActive&&!force){persistenceFailureActive=false;return}const t=$('#toast');t.textContent=message;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),2600)}
 function openModal(id){const modal=$(`#${id}`);modal.classList.add('open');modal.setAttribute('aria-hidden','false');document.body.classList.add('modal-open')}
-function closeModal(id,force=false){if(persistenceFailureActive&&!force){setTimeout(()=>{persistenceFailureActive=false},0);return false}const modal=$(`#${id}`);modal.classList.remove('open');modal.setAttribute('aria-hidden','true');if(!$('.modal-backdrop.open'))document.body.classList.remove('modal-open');return true}
+function closeModal(id,force=false){if(persistenceFailureActive&&!force){setTimeout(()=>{persistenceFailureActive=false},0);return false}const modal=$(`#${id}`);modal.classList.remove('open');modal.setAttribute('aria-hidden','true');if(id==='selectPickerBackdrop')activeSelectPicker=null;if(!$('.modal-backdrop.open'))document.body.classList.remove('modal-open');return true}
+function openSelectPicker(select,allowHidden=false){if(!select||select.disabled||(!allowHidden&&select.hidden)||select.classList.contains('type-native-select'))return;if(activeSelectPicker===select&&$('#selectPickerBackdrop').classList.contains('open'))return;activeSelectPicker=select;const title=select.getAttribute('aria-label')||select.labels?.[0]?.textContent?.trim()||'选择一项';$('#selectPickerTitle').textContent=title;$('#selectPickerList').innerHTML=[...select.options].filter(option=>!option.disabled&&!option.hidden&&!option.parentElement?.hidden).map(option=>`<button type="button" class="select-picker-option ${option.selected?'selected':''}" data-picker-value="${escapeHTML(option.value)}"><span>${escapeHTML(option.textContent)}</span>${option.selected?'<span aria-hidden="true">✓</span>':''}</button>`).join('')||'<div class="empty-state">没有可选项。</div>';openModal('selectPickerBackdrop')}
+function chooseSelectPickerValue(value){const select=activeSelectPicker;if(!select)return;select.value=value;select.dispatchEvent(new Event('input',{bubbles:true}));select.dispatchEvent(new Event('change',{bubbles:true}));closeModal('selectPickerBackdrop')}
 function askConfirm(title,message,action,label='确认'){
   $('#confirmTitle').textContent=title;$('#confirmMessage').textContent=message;$('#confirmAccept').textContent=label;confirmAction=action;openModal('confirmModal');
 }
@@ -500,7 +514,7 @@ function startSetup(){
     }else if(fund?.type==='stored'&&fund.openingCents>0)addLedger(fund,'opening',fund.openingCents,'会员储值卡初始余额',startAt,{cycleId:cycle.id});
     reconcileScheduledCycles();reconcileDueRules();
     if(!persist(false)){setupDraft.step=3;showSetupMessage('账本未能保存，修改已撤销，请重试。',true);return}
-    onboardingNeeded=false;clearSetupDraft();showOnboarding(false);render();showToast('账本已准备好');
+    onboardingNeeded=false;clearSetupDraft();$('#salaryForm').dataset.loaded='false';$('#salaryForm').dataset.dirty='false';renderSettings(true);showOnboarding(false);render();showToast('账本已准备好');
   }catch(error){
     const message=error.message||'请检查填写内容';
     if(message.includes('每月到手工资')||message.includes('发薪日')||message.includes('刷新时间'))showSetupStep(1);else showSetupStep(2);
@@ -528,7 +542,7 @@ function eventDescription(entry){
   if(entry.note)return entry.note;
   return ({expense:'支出',topup:'储值卡充值',increment:'每月自动存入',opening:'已储蓄额度',reset:'恢复本期额度','fixed-base':'本期初始额度',adjust:'额度调整','surplus-out':'结余转入累计结余','transfer-out':'转出余额','extra-income':'临时收入','extra-savings':'额外存入','savings-in':'余额转入','overdraft-transfer':'停用钱包缺口转入待处理','overdraft-settlement':'补齐历史超支','overdraft-adjust':'历史超支退款'})[entry.kind]||'账目记录';
 }
-function eventAmount(entry){if(entry.kind==='expense'||entry.kind==='transfer-out'||entry.kind==='surplus-out'||entry.kind==='overdraft-settlement')return `−${money(entry.amountCents)}`;if(entry.kind==='adjust')return `${entry.amountCents>=0?'+':''}${money(entry.amountCents)}`;if(['topup','increment','opening','transfer-in','savings-in','extra-income','extra-savings','overdraft-adjust','overdraft-transfer'].includes(entry.kind))return `+${money(entry.amountCents)}`;if(entry.kind==='reset')return `重置为 ${money(entry.amountCents)}`;if(entry.kind==='fixed-base')return `额度 ${money(entry.amountCents)}`;return ''}
+function eventAmount(entry){if(entry.kind==='expense'||entry.kind==='transfer-out'||entry.kind==='surplus-out'||entry.kind==='overdraft-settlement')return `−${money(entry.amountCents)}`;if(entry.kind==='budget-adjustment')return `额度 ${entry.budgetSign>0?'+':entry.budgetSign<0?'−':''}${money(entry.amountCents)}`;if(entry.kind==='adjust'&&entry.reason==='balance-reconciliation'&&Number.isSafeInteger(entry.targetBalanceCents))return `当前余额 ${money(entry.targetBalanceCents)}`;if(entry.kind==='adjust')return `${entry.amountCents>=0?'+':''}${money(entry.amountCents)}`;if(['topup','increment','opening','transfer-in','savings-in','extra-income','extra-savings','overdraft-adjust','overdraft-transfer'].includes(entry.kind))return `+${money(entry.amountCents)}`;if(entry.kind==='reset')return `重置为 ${money(entry.amountCents)}`;if(entry.kind==='fixed-base')return `额度 ${money(entry.amountCents)}`;return ''}
 function renderEntries(rows,canDelete=true){
   if(!rows.length)return '<div class="empty-state">这个范围还没有账目记录。</div>';
   return [...rows].sort((a,b)=>b.timestamp-a.timestamp).map(e=>{
@@ -540,18 +554,19 @@ function renderEntries(rows,canDelete=true){
 
 function renderWallets(){
   const cycleRangeNow=currentCycleRange(),rows=currentCycleEntries(),salary=state.salaryCents,allocated=currentCycleAllocation(),plannedOver=Math.max(0,allocationTotal()-plannedTakeHomeCents()),currentOver=Math.max(0,allocated-salary),overshoot=Math.max(plannedOver,currentOver);
+  $('#recordCurrentBalancesBtn').hidden=!state.funds.some(f=>!f.disabledAt);
   $('#homeCycleText').textContent=`发薪周期 ${formatRange(cycleRangeNow.startAt,cycleRangeNow.endAt)}`;
   $('#homeSalary').textContent=money(salary);$('#homeAllocated').textContent=money(allocated);$('#homeUnallocated').textContent=money(salary-allocated);$('#homeSpent').textContent=money(sumExpenses(allReportEntries().filter(e=>e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt)));
   $('#homeSavingsBalance').textContent=money(savingsBalanceAt(Date.now()));
   const warning=$('#allocationWarning');warning.hidden=overshoot===0;warning.textContent=overshoot?`${currentOver?`本月已分配超出月到手工资 ${money(currentOver)}。`:''}${plannedOver?`下期计划超出月到手工资 ${money(plannedOver)}。`:''}请减少钱包额度或调整月到手工资。`:'';
   const walletCards=state.funds.map(f=>{
     const spent=periodSpendForFund(f.id,rows),balance=fundBalanceAt(f,Date.now()),allowance=f.type==='fixed'?f.allowanceCents:f.type==='increment'?f.contributionCents:0,pendingRows=[...state.occurrences.filter(o=>(o.status==='pending'||o.status==='exception')&&o.fundId===f.id),...state.legacyDues.filter(d=>(d.legacyStatus==='pending'||d.legacyStatus==='unbound')&&d.fundId===f.id)],pendingAmount=pendingRows.reduce((sum,row)=>sum+row.amountCents,0);
-    let detail='';if(f.type==='fixed'){const budgetRemaining=f.allowanceCents-spent;detail=`<div class="wallet-meta"><span>本月已用 ${money(spent)}</span><span class="${budgetRemaining<0?'over':''}">预算${budgetRemaining<0?'超出':'余量'} ${money(Math.abs(budgetRemaining))}</span></div><div class="wallet-meta"><span>本期额度 ${money(f.allowanceCents)}</span><span>可用余额含转入</span></div>`}
+    let detail='';if(f.type==='fixed'){const thisBudget=currentFundBudget(f),budgetRemaining=thisBudget-spent;detail=`<div class="wallet-meta"><span>本月已用 ${money(spent)}</span><span class="${budgetRemaining<0?'over':''}">预算${budgetRemaining<0?'超出':'余量'} ${money(Math.abs(budgetRemaining))}</span></div><div class="wallet-meta"><span>本期预算 ${money(thisBudget)}</span><span>每月计划 ${money(f.allowanceCents)}</span></div>`}
     else if(f.type==='increment'){const opening=state.entries.filter(e=>e.fundId===f.id&&e.kind==='opening'&&e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt).reduce((a,e)=>a+e.amountCents,0),carry=fundBalanceAt(f,cycleRangeNow.startAt-1)+opening,added=state.entries.filter(e=>e.fundId===f.id&&e.kind==='increment'&&e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt).reduce((a,e)=>a+e.amountCents,0),transferred=state.entries.filter(e=>e.fundId===f.id&&['transfer-in','savings-in'].includes(e.kind)&&e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt).reduce((a,e)=>a+e.amountCents,0),extra=state.entries.filter(e=>e.fundId===f.id&&e.kind==='extra-savings'&&e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt).reduce((a,e)=>a+e.amountCents,0);detail=`<div class="wallet-meta multi-meta"><span>已储蓄 ${money(carry)}</span><span>本月自动存入 ${money(added)}</span></div><div class="wallet-meta"><span>本月转入 / 额外存入 ${money(transferred+extra)}</span><span>本月已用 ${money(spent)}</span></div><div class="wallet-meta"><span>累计余额 ${money(balance)}</span><span>每月自动存入 ${money(f.contributionCents)}</span></div>`}
     else detail=`<div class="wallet-meta"><span>本月已用 ${money(spent)}</span><span>会员储值</span></div>`;
     if(pendingRows.length)detail+=`<div class="wallet-meta pending-meta"><span>待确认 ${pendingRows.length} 笔</span><span>合计 ${money(pendingAmount)}</span></div>`;
     const ratio=allowance>0?Math.max(0,Math.min(100,spent/allowance*100)):0;
-    return `<article class="wallet-card ${f.disabledAt?'wallet-disabled':''}" style="--wallet-color:${f.color}"><button type="button" class="wallet-main" ${f.disabledAt?`data-wallet-detail="${escapeHTML(f.id)}"`:`data-wallet-id="${escapeHTML(f.id)}"`}><div class="wallet-title-row"><span class="fund-dot" style="background:${f.color}"></span><strong>${escapeHTML(f.name)}</strong><span class="wallet-kind">${typeLabel(f.type)}${f.disabledAt?' · 已停用':''}</span></div><div class="wallet-balance"><strong>${money(balance)}</strong><span>${f.type==='increment'?'已储蓄余额':f.type==='stored'?'储值余额':'可用余额'}</span></div>${f.type==='stored'?'':`<div class="progress-track"><div class="progress-fill" style="width:${ratio}%"></div></div>`}${detail}</button><div class="wallet-actions"><button type="button" data-wallet-detail="${escapeHTML(f.id)}">明细</button><button type="button" data-edit-fund="${escapeHTML(f.id)}">编辑</button><button type="button" class="danger-action" data-delete-fund="${escapeHTML(f.id)}">删除</button><details class="wallet-more"><summary>更多</summary><div class="wallet-more-menu">${f.type==='stored'&&!f.disabledAt?`<button type="button" data-topup-wallet="${escapeHTML(f.id)}">充值</button>`:''}${['fixed','increment'].includes(f.type)&&!f.disabledAt?`<button type="button" data-extra-deposit="${escapeHTML(f.id)}">${f.type==='fixed'?'临时收入':'额外存入'}</button>`:''}${['fixed','increment'].includes(f.type)&&!f.disabledAt?`<button type="button" data-balance-transfer="fund:${escapeHTML(f.id)}">转给其他钱包</button>`:''}<button type="button" data-${f.disabledAt?'enable':'disable'}-fund="${escapeHTML(f.id)}">${f.disabledAt?'恢复钱包':'停用钱包'}</button></div></details></div></article>`;
+    return `<article class="wallet-card ${f.disabledAt?'wallet-disabled':''}" style="--wallet-color:${f.color}"><button type="button" class="wallet-main" ${f.disabledAt?`data-wallet-detail="${escapeHTML(f.id)}"`:`data-wallet-id="${escapeHTML(f.id)}"`}><div class="wallet-title-row"><span class="fund-dot" style="background:${f.color}"></span><strong>${escapeHTML(f.name)}</strong><span class="wallet-kind">${typeLabel(f.type)}${f.disabledAt?' · 已停用':''}</span></div><div class="wallet-balance"><strong>${money(balance)}</strong><span>${f.type==='increment'?'已储蓄余额':f.type==='stored'?'储值余额':'可用余额'}</span></div>${f.type==='stored'?'':`<div class="progress-track"><div class="progress-fill" style="width:${ratio}%"></div></div>`}${detail}</button><div class="wallet-actions"><button type="button" data-wallet-detail="${escapeHTML(f.id)}">流水</button><button type="button" data-wallet-plans="${escapeHTML(f.id)}">定期扣费</button><button type="button" data-edit-fund="${escapeHTML(f.id)}">编辑</button><button type="button" class="danger-action" data-delete-fund="${escapeHTML(f.id)}">删除</button><details class="wallet-more"><summary>更多</summary><div class="wallet-more-menu">${f.type==='stored'&&!f.disabledAt?`<button type="button" data-topup-wallet="${escapeHTML(f.id)}">充值</button>`:''}${['fixed','increment'].includes(f.type)&&!f.disabledAt?`<button type="button" data-extra-deposit="${escapeHTML(f.id)}">${f.type==='fixed'?'临时收入':'额外存入'}</button>`:''}${f.type==='fixed'&&!f.disabledAt?`<button type="button" data-budget-transfer="${escapeHTML(f.id)}">调整预算</button>`:''}${['fixed','increment'].includes(f.type)&&!f.disabledAt?`<button type="button" data-balance-transfer="fund:${escapeHTML(f.id)}">转移可用余额</button>`:''}<button type="button" data-${f.disabledAt?'enable':'disable'}-fund="${escapeHTML(f.id)}">${f.disabledAt?'恢复钱包':'停用钱包'}</button></div></details></div></article>`;
   });
   const accounts=renderAccounts(),surplus=savingsBalanceAt(Date.now()),surplusSpent=state.savingsEntries.filter(e=>e.kind==='expense'&&e.timestamp>=cycleRangeNow.startAt&&e.timestamp<cycleRangeNow.endAt).reduce((a,e)=>a+e.amountCents,0),surplusAdded=state.savingsEntries.filter(e=>e.kind==='surplus-in'&&e.settlementCycleId===openCycle()?.id).reduce((a,e)=>a+e.amountCents,0);
   const savingsCard=`<article class="wallet-card savings-container"><button type="button" class="wallet-main" data-savings-expense><div class="wallet-title-row"><span class="account-badge">盈</span><strong>累计结余</strong><span class="wallet-kind">历月结余</span></div><div class="wallet-balance"><strong>${money(surplus)}</strong><span>${surplus<0?'待补差额（历史账单修正）':'可用余额'}</span></div><div class="wallet-meta"><span>本月转入结余 ${money(surplusAdded)}</span><span>本月已用 ${money(surplusSpent)}</span></div></button><div class="wallet-actions"><button type="button" data-savings-detail>明细</button><button type="button" data-balance-transfer="savings">转入长期储蓄</button></div></article>`;
@@ -567,12 +582,12 @@ function renderAccounts(){
   return state.accounts.map(a=>{const credited=state.accountEntries.filter(e=>e.accountId===a.id&&['provident-credit','medical-credit'].includes(e.kind)&&e.scheduledKey&&e.timestamp>=range.startAt&&e.timestamp<Math.min(range.endAt,now+1)).reduce((sum,e)=>sum+e.amountCents,0);return `<article class="wallet-card account-wallet-card"><button type="button" class="wallet-main" data-account-action="expense" data-account-id="${escapeHTML(a.id)}"><div class="wallet-title-row"><span class="account-badge">${a.type==='provident'?'公':'医'}</span><strong>${escapeHTML(a.name)}</strong><span class="wallet-kind">${a.type==='provident'?'公积金账户':'医保个人账户'}</span></div><div class="wallet-balance"><strong>${money(accountBalanceAt(a))}</strong><span>账户余额</span></div><div class="wallet-meta"><span>本月自动登记 ${money(credited)}</span><span>下次 ${scheduleLabel(nextScheduledAt())}</span></div></button><div class="wallet-actions"><button type="button" data-account-action="credit" data-account-id="${escapeHTML(a.id)}">登记/修正到账</button><button type="button" data-account-action="expense" data-account-id="${escapeHTML(a.id)}">消费</button>${a.type==='provident'?`<button type="button" data-account-action="transfer" data-account-id="${escapeHTML(a.id)}">提取到钱包</button>`:''}<button type="button" data-account-detail="${escapeHTML(a.id)}">明细</button><button type="button" data-account-edit="${escapeHTML(a.id)}">管理</button></div></article>`});
 }
 function renderLegacyWarning(){
-  const due=state.legacyDues.filter(d=>d.legacyStatus==='unbound'||d.legacyStatus==='pending').length,plans=state.legacySubscriptions.filter(s=>!s.boundAt).length,pending=state.occurrences.filter(o=>o.status==='pending'||o.status==='exception').length,total=due+plans+pending,node=$('#legacyWarning');node.hidden=!total;node.innerHTML=total?`${pending?`有 ${pending} 笔计划消费待确认。`:''}${due+plans?`旧版本还有 ${due+plans} 项待处理。`:''}<button type="button" data-home-open-legacy>在钱包明细处理中</button>`:'';
+  const due=state.legacyDues.filter(d=>d.legacyStatus==='unbound'||d.legacyStatus==='pending').length,plans=state.legacySubscriptions.filter(s=>!s.boundAt).length,node=$('#legacyWarning'),total=due+plans;node.hidden=!total;node.innerHTML=total?`旧版数据还有 ${total} 项需要处理。到“账单”页确认账单；定期安排可从钱包卡片打开。`:'';
 }
 function renderHomePending(){
   const occurrences=state.occurrences.filter(o=>o.status==='pending'||o.status==='exception'),dues=state.legacyDues.filter(d=>d.legacyStatus==='unbound'||d.legacyStatus==='pending');
   const rows=[...occurrences.map(o=>({id:o.id,type:'occurrence',name:state.rules.find(r=>r.id===o.ruleId)?.name||o.fundName||'计划消费',dueAt:o.dueAt,amountCents:o.amountCents,fundId:o.fundId})),...dues.map(d=>({id:d.id,type:'legacy',name:d.subscriptionName,dueAt:dateAtNoon(d.dueDate).getTime(),amountCents:d.amountCents,fundId:d.fundId}))].sort((a,b)=>a.dueAt-b.dueAt||a.id.localeCompare(b.id));
-  const hasActiveFund=state.funds.some(f=>!f.disabledAt);$('#homePendingList').innerHTML=rows.length?rows.map(row=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(row.name)}</strong><span>${scheduleLabel(row.dueAt)} · 尚未扣款 · ${money(row.amountCents)}${row.fundId&&getFund(row.fundId)?` · ${escapeHTML(getFund(row.fundId).name)}`:' · 待选择钱包'}</span></div><div class="subscription-actions"><button type="button" class="primary-button compact" data-handle-pending="${escapeHTML(row.id)}" data-pending-type="${row.type}" ${hasActiveFund?'':'disabled'}>确认账单</button><button type="button" class="secondary-button compact" data-pending-cancel data-record-id="${escapeHTML(row.id)}" data-record-type="${row.type}">取消</button></div></article>`).join(''):'<div class="empty-state">当前没有待确认账单。</div>';
+  const hasActiveFund=state.funds.some(f=>!f.disabledAt);$('#billsPendingCount').textContent=rows.length?`${rows.length} 笔`:'';$('#billsPendingSection').hidden=!rows.length;$('#billsPendingList').innerHTML=rows.map(row=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(row.name)}</strong><span>${scheduleLabel(row.dueAt)} · 尚未扣款 · ${money(row.amountCents)}${row.fundId&&getFund(row.fundId)?` · ${escapeHTML(getFund(row.fundId).name)}`:' · 待选择钱包'}</span></div><div class="subscription-actions"><button type="button" class="primary-button compact" data-handle-pending="${escapeHTML(row.id)}" data-pending-type="${row.type}" ${hasActiveFund?'':'disabled'}>确认</button><button type="button" class="secondary-button compact" data-pending-cancel data-record-id="${escapeHTML(row.id)}" data-record-type="${row.type}">取消</button></div></article>`).join('');
 }
 function renderHomeOverdrafts(){
   const rows=outstandingOverdrafts(),total=rows.reduce((sum,row)=>sum+row.outstandingCents,0),pending=state.occurrences.filter(row=>row.status==='pending'||row.status==='exception').length+state.legacyDues.filter(row=>row.legacyStatus==='pending'||row.legacyStatus==='unbound').length;
@@ -604,15 +619,16 @@ function reportContext(){
   const active=openCycle()?.id===cycle?.id;return{title:active?'本月':selectedReport==='history'?'历史周期':'发薪月份',caption:cycle?`${cycleCaption(cycle)}${active?' · 发薪周期':''}`:'暂无可查看周期',entries:cycle?cycleEntries(cycle):[],cycles:cycle?[cycle]:[],cycle,kind:'cycle'};
 }
 function renderReportContextSelect(){
-  const select=$('#reportContextSelect');select.innerHTML='';
+  const select=$('#reportContextSelect'),button=$('#reportContextButton'),label=$('#reportContextValue');select.innerHTML='';select.hidden=true;button.hidden=true;
   if(selectedReport==='year'){
-    for(const y of reportYears())select.add(new Option(`${y} 年发薪月份`,String(y),y===selectedYear,y===selectedYear));select.hidden=false;select.setAttribute('aria-label','选择年度');
+    for(const y of reportYears())select.add(new Option(`${y} 年`,String(y),y===selectedYear,y===selectedYear));select.setAttribute('aria-label','选择年度');button.hidden=false;
   }else if(selectedReport==='month'||selectedReport==='history'){
     let cycles=reportCycles();if(selectedReport==='history')cycles=cycles.filter(c=>c.startAt<(openCycle()?.startAt||Infinity));cycles=cycles.sort((a,b)=>b.startAt-a.startAt);
-    if(!cycles.length){select.hidden=true;return}
+    if(!cycles.length){select.hidden=true;button.hidden=true;return}
     if(!cycles.some(c=>c.id===selectedCycleId))selectedCycleId=selectedReport==='month'?(openCycle()?.id||cycles[0].id):cycles[0].id;
-    for(const c of cycles)select.add(new Option(cycleOptionText(c),c.id,c.id===selectedCycleId,c.id===selectedCycleId));select.hidden=false;select.setAttribute('aria-label',selectedReport==='month'?'选择发薪月份':'选择历史周期');
+    for(const c of cycles)select.add(new Option(cycleOptionText(c),c.id,c.id===selectedCycleId,c.id===selectedCycleId));select.setAttribute('aria-label',selectedReport==='month'?'选择发薪月份':'选择历史周期');button.hidden=false;
   }else select.hidden=true;
+  label.textContent=select.selectedOptions[0]?.textContent||'';
 }
 function relevantFundIds(entries){const ids=new Set(state.funds.map(f=>f.id));for(const a of state.accounts)ids.add(`account:${a.id}`);ids.add('savings');for(const e of entries)ids.add(e.fundId);return [...ids]}
 function cycleSpend(fundId,cycles,entries){return sumExpenses(entries,fundId)}
@@ -651,10 +667,10 @@ function renderReports(){
 function renderSettings(force=false){
   const form=$('#salaryForm');if(force||form.dataset.loaded!=='true'){if(form.dataset.dirty==='true')showToast('工资设置已重新载入');$('#salaryInput').value=(state.salaryCents/100).toFixed(2);$('#paydayInput').value=state.payday;$('#paydayHourInput').value=state.paydayHour;form.dataset.loaded='true';form.dataset.dirty='false'}
   $('#dataStorageDescription').textContent=nativeStorage?'保存在本机，可导出 JSON 备份':'保存在此浏览器，可导出 JSON 备份';
-  $('#privacyNote').textContent=nativeStorage?'花在哪 2.0.2 · 数据保存在本机':'数据只保存在此浏览器 · 不需要注册 · 花在哪 2.0.2';
+  $('#privacyNote').textContent=nativeStorage?'数据保存在本机':'数据只保存在此浏览器';
   const net=state.salaryCents,total=allocationTotal(),current=currentCycleAllocation(),over=total-net,currentOver=current-net;
   $('#salaryAllocationHelp').textContent=over>0||currentOver>0?`${currentOver>0?`本期已分配超出月到手工资 ${money(currentOver)}。`:''}${over>0?`下期计划分配超出月到手工资 ${money(over)}。`:''}请削减钱包额度或调整月到手工资。`:`本期已分配 ${money(current)}；下期计划分配 ${money(total)}，预计未分配 ${money(net-total)}。`;
-  $('#nextRefreshText').textContent=`下次自动刷新：${scheduleLabel(nextScheduledAt())}。应用重新打开时会补齐漏过的发薪周期和到期账单。`;
+  $('#nextRefreshText').textContent=`下次刷新：${scheduleLabel(nextScheduledAt())}`;
   $('#backupStatus').textContent=state.lastExportAt?`上次导出备份：${timeISO(new Date(state.lastExportAt))}`:'尚未导出备份';
 }
 function render(){
@@ -665,6 +681,21 @@ function showPage(id){$$('.page').forEach(p=>p.classList.toggle('active',p.id===
 function openEntry(fundId,kind='expense'){
   const fund=getFund(fundId);if(!fund)return showToast('这个钱包已经删除');if(fund.disabledAt)return showToast('这个钱包已停用；恢复后才能记入新账目');if(kind==='topup'&&fund.type!=='stored')return showToast('只有会员储值可以充值');
   $('#entryForm').reset();$('#entryFund').value=fund.id;$('#entryTitle').textContent=fund.name;$('#entryEyebrow').textContent=kind==='topup'?'储值卡充值':`当前余额 ${money(fundBalanceAt(fund,Date.now()))}`;$('#entryAmountLabel').textContent=kind==='topup'?'本次充值金额':'本次用了多少';$('#entryForm').dataset.kind=kind;openModal('entryModal');setTimeout(()=>$('#entryAmount').focus(),150);
+}
+function openCurrentBalanceEntry(){
+  if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');
+  const now=Date.now(),funds=state.funds.filter(f=>!f.disabledAt);
+  if(!funds.length)return showToast('先添加一个钱包');
+  $('#balanceEntryRows').innerHTML=funds.map(fund=>{const balance=fundBalanceAt(fund,now),budget=fund.type==='fixed'?`本期预算 ${money(currentFundBudget(fund))} · `:'',min=fund.type==='fixed'?'':' min="0"';return `<label class="balance-entry-row" for="balanceEntry-${escapeHTML(fund.id)}"><span class="balance-entry-info"><strong>${escapeHTML(fund.name)}</strong><small>${budget}当前余额 ${money(balance)}</small></span><span class="amount-field balance-entry-amount"><span>¥</span><input id="balanceEntry-${escapeHTML(fund.id)}" data-balance-fund="${escapeHTML(fund.id)}" type="number" inputmode="decimal" step="0.01"${min} value="${(balance/100).toFixed(2)}" required aria-label="${escapeHTML(fund.name)}当前实际余额"></span></label>`}).join('');
+  openModal('balanceEntryModal');
+}
+function saveCurrentBalances(){
+  if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');
+  const now=Date.now(),changes=[];
+  for(const input of $$('#balanceEntryRows [data-balance-fund]')){const fund=getFund(input.dataset.balanceFund),target=toCents(input.value);if(!fund||fund.disabledAt||target==null||fund.type!=='fixed'&&target<0)return showToast('请检查每个钱包填写的实际余额');const current=fundBalanceAt(fund,now);if(current!==target)changes.push({fund,delta:target-current,target})}
+  if(!changes.length){closeModal('balanceEntryModal');return showToast('当前余额没有变化')}
+  for(const {fund,delta,target} of changes)addLedger(fund,'adjust',delta,'录入当前余额',now,{reason:'balance-reconciliation',targetBalanceCents:target});
+  if(persist()){closeModal('balanceEntryModal');showToast(`${changes.length} 个钱包余额已更新；预算和消费记录未改变`)}
 }
 function openSurplusExpense(){if(savingsBalanceAt(Date.now())<=0)return showToast('累计结余当前没有可用余额');$('#entryForm').reset();$('#entryFund').value='';$('#entryTitle').textContent='累计结余';$('#entryEyebrow').textContent=`当前余额 ${money(savingsBalanceAt(Date.now()))}`;$('#entryAmountLabel').textContent='本次用了多少';$('#entryForm').dataset.kind='surplus-expense';openModal('entryModal');setTimeout(()=>$('#entryAmount').focus(),150)}
 function refreshSavingsDetail(){const rows=state.savingsEntries.slice().sort((a,b)=>b.timestamp-a.timestamp);$('#savingsDetailBalance').innerHTML=`<span>当前余额</span><strong>${money(savingsBalanceAt(Date.now()))}</strong><small>新周期归集每月预算钱包的正余额；历史缺口补齐与退款也会列在这里</small>`;$('#savingsDetailRecords').innerHTML=rows.map(e=>{const positive=e.kind==='surplus-in'||e.kind==='overdraft-adjust',expense=e.kind==='expense',settlement=e.kind==='overdraft-settlement',label=e.note||(positive?`${e.sourceFundName||'钱包'}结余转入`:expense?'支出':settlement?'补齐历史超支':'转入钱包');return `<div class="record-row"><span class="record-icon paid-icon">${positive?'+':expense||settlement?'−':'↗'}</span><div class="record-main"><div class="record-title">${escapeHTML(label)}</div><div class="record-sub">${shortDate(e.date)} ${new Date(e.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}${e.sourceFundName?` · ${escapeHTML(e.sourceFundName)}`:''}${settlement?' · 余额调整，不计入消费':''}</div></div><strong class="record-amount ${positive?'positive-amount':'expense-amount'}">${positive?'+':'−'}${money(e.amountCents)}</strong>${expense?`<button class="delete-record" data-delete-entry="savings-${escapeHTML(e.id)}">删除</button>`:''}</div>`}).join('')||'<div class="empty-state">还没有结余记录。新周期开始时，会自动归集每月预算钱包的正余额。</div>'}
@@ -690,6 +721,28 @@ function saveBalanceTransfer(){
   persist();closeModal('transferModal');showToast('余额转入已记录；钱包额度计划未改变')
 }
 function transferAllAvailable(){const source=balanceTransferSource();if(source.targetType==null||source.balance<=0)return showToast('来源余额不足');$('#transferAmount').value=(source.balance/100).toFixed(2)}
+function openBudgetTransfer(sourceId){
+  const source=getFund(sourceId);if(!source||source.disabledAt||source.type!=='fixed')return showToast('预算调整只适用于启用中的每月预算钱包');
+  const targets=state.funds.filter(f=>!f.disabledAt&&f.type==='fixed'&&f.id!==source.id);if(!targets.length)return showToast('还没有其他每月预算钱包');
+  $('#budgetTransferForm').reset();$('#budgetTransferSource').value=source.id;$('#budgetTransferSourceName').textContent=source.name;$('#budgetTransferSourceBudget').textContent=money(source.allowanceCents);$('#budgetTransferSourceCurrent').textContent=money(currentFundBudget(source));
+  $('#budgetTransferTarget').innerHTML=targets.map(f=>`<option value="${escapeHTML(f.id)}">${escapeHTML(f.name)}</option>`).join('');$('#budgetTransferAmount').max=(Math.min(source.allowanceCents,currentFundBudget(source))/100).toFixed(2);$('#budgetTransferAmount').value='';updateBudgetTransferPreview();openModal('budgetTransferModal');
+}
+function updateBudgetTransferPreview(){
+  const source=getFund($('#budgetTransferSource').value),target=getFund($('#budgetTransferTarget').value),amount=centsInput('#budgetTransferAmount');
+  const valid=source&&target&&amount!=null&&amount>0;$('#budgetTransferPreview').textContent=valid?`${source.name} 每月预算 ${money(source.allowanceCents)} → ${money(source.allowanceCents-amount)}；${target.name} ${money(target.allowanceCents)} → ${money(target.allowanceCents+amount)}。本期相同金额调整，钱包可用余额不变。`:'填写调拨金额，预览只调整预算额度。';
+}
+function saveBudgetTransfer(){
+  if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');
+  const source=getFund($('#budgetTransferSource').value),target=getFund($('#budgetTransferTarget').value),amount=centsInput('#budgetTransferAmount'),cycle=openCycle();
+  if(!source||!target||source===target||source.disabledAt||target.disabledAt||source.type!=='fixed'||target.type!=='fixed')return showToast('请选择两个启用中的每月预算钱包');
+  const sourceCurrent=currentFundBudget(source),targetCurrent=currentFundBudget(target);
+  if(amount==null||amount<=0||amount>source.allowanceCents||amount>sourceCurrent)return showToast('调拨金额不能超过来源钱包的本月预算与每月预算');
+  if(!cycle)return showToast('当前没有可调整的发薪周期');
+  source.allowanceCents-=amount;target.allowanceCents+=amount;
+  cycle.allocations[source.id]={type:'fixed',amountCents:sourceCurrent-amount};cycle.allocations[target.id]={type:'fixed',amountCents:targetCurrent+amount};
+  recordBudgetAdjustment({kind:'transfer',sourceFundId:source.id,sourceFundName:source.name,targetFundId:target.id,targetFundName:target.name,amountCents:amount});
+  persist();closeModal('budgetTransferModal');showToast('预算已重新分配；钱包可用余额未变');
+}
 function openExtraDeposit(id){const fund=getFund(id);if(!fund||fund.disabledAt||!['fixed','increment'].includes(fund.type))return;$('#extraDepositForm').reset();const choices=state.funds.filter(item=>!item.disabledAt&&['fixed','increment'].includes(item.type));$('#extraDepositFund').innerHTML=choices.map(item=>`<option value="${escapeHTML(item.id)}">${escapeHTML(item.name)}</option>`).join('');$('#extraDepositFund').value=fund.id;$('#extraDepositTitle').textContent=fund.type==='fixed'?'临时收入':'额外存入长期储蓄';$('#extraDepositAmount').value='';openModal('extraDepositModal')}
 function saveExtraDeposit(){
   if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');const fund=getFund($('#extraDepositFund').value),amount=centsInput('#extraDepositAmount'),note=$('#extraDepositNote').value.trim();if(!fund||fund.disabledAt||!['fixed','increment'].includes(fund.type)||amount==null||amount<=0)return showToast('请选择启用的钱包并输入有效金额');addLedger(fund,fund.type==='fixed'?'extra-income':'extra-savings',amount,note||(fund.type==='fixed'?'临时收入':'额外存入长期储蓄'));persist();closeModal('extraDepositModal');showToast('额外入账已记录，不会改变每期工资分配')
@@ -728,7 +781,7 @@ function createFund(form){
   const now=Date.now(),contributionChanged=Boolean(existing&&type==='increment'&&contribution!==existing.contributionCents);
   if(existing){
     const oldAllowance=existing.allowanceCents,oldContribution=existing.contributionCents;Object.assign(existing,proposed,{openingCents:existing.openingCents});
-     if(type==='fixed'&&allowance!==oldAllowance){if(!existing.disabledAt){addLedger(existing,'adjust',allowance-oldAllowance,`额度调整：${money(oldAllowance)} → ${money(allowance)}`,now);if(cycle)cycle.allocations[existing.id]={type,amountCents:allowance}}}
+      if(type==='fixed'&&allowance!==oldAllowance){if(!existing.disabledAt){const previous=currentFundBudget(existing);if(cycle)cycle.allocations[existing.id]={type,amountCents:allowance};recordBudgetAdjustment({kind:'change',fundId:existing.id,fundName:existing.name,amountCents:Math.abs(allowance-previous),budgetSign:allowance>=previous?1:-1,note:`每月预算调整：${money(previous)} → ${money(allowance)}`})}}
      if(type==='increment'&&contribution!==oldContribution){if(cycle&&!existing.disabledAt)cycle.allocations[existing.id]=cycle.allocations[existing.id]||{type,amountCents:oldContribution}}
   }else{
      state.funds.push(proposed);if(cycle){snapshotAllocation(cycle,proposed);if(type==='fixed')addLedger(proposed,'fixed-base',allowance,'加入钱包分类时设置额度',now,{cycleId:cycle.id});else if(type==='increment'){if(opening>0)addLedger(proposed,'opening',opening,'已有储蓄入账',now,{cycleId:cycle.id});if(contribution>0)addLedger(proposed,'increment',contribution,'加入本期的每月自动存入',now,{cycleId:cycle.id})}else if(opening>0)addLedger(proposed,'opening',opening,'储值卡初始余额',now,{cycleId:cycle.id})}
@@ -743,29 +796,56 @@ function fundDeletionLinks(id){
 function updateDeleteFundFields(){
   const hidden=$('#deleteFundMode').value!=='move';$('#deleteFundTargetField').hidden=hidden;$('#deleteFundTarget').disabled=hidden;
 }
+function fixedFundDeletionSummary(fund,cycle=openCycle()){
+  const allocation=cycle?.allocations?.[fund.id]?.type==='fixed'?cycle.allocations[fund.id].amountCents:fund.allowanceCents;
+  const spent=cycle?sumExpenses(state.entries.filter(e=>e.fundId===fund.id&&e.timestamp>=cycle.startAt&&e.timestamp<(cycle.endAt??Infinity))):0;
+  const released=Math.max(0,allocation-spent),balance=fundBalanceAt(fund,Date.now());
+  return{allocation,spent,released,balance};
+}
+function reconcileDeletedFundBudgets(){
+  for(const cycle of state.cycles||[])for(const event of cycle.budgetAdjustments||[]){
+    if(event.kind!=='release'||event.reason!=='wallet-deletion'||!event.fundId||!Number.isSafeInteger(event.originalAllocationCents))continue;
+    const endAt=cycle.endAt??Infinity,spent=sumExpenses(state.entries.filter(row=>row.fundId===event.fundId&&row.timestamp>=cycle.startAt&&row.timestamp<endAt));
+    const removedSpend=Math.max(0,(event.spentCents||0)-spent);
+    if(removedSpend>0)event.balanceAtDeletionCents=(event.balanceAtDeletionCents||0)+removedSpend;
+    event.spentCents=spent;event.amountCents=Math.max(0,event.originalAllocationCents-spent);event.note=`删除钱包：未用预算 ${money(event.amountCents)} 退回未分配`;
+    cycle.allocations=cycle.allocations||{};cycle.allocations[event.fundId]={type:'fixed',amountCents:spent};
+    const cash=Math.max(0,event.balanceAtDeletionCents||0);let transfer=event.savingsTransferId?state.savingsEntries.find(row=>row.id===event.savingsTransferId):null,sourceTransfer=event.transferId?state.entries.find(row=>row.transferId===event.transferId&&row.kind==='transfer-out'):null;
+    if(cash>0){
+      const timestamp=event.deletedAt||event.timestamp;if(!event.transferId)event.transferId=newId();
+      if(!sourceTransfer){addLedger(event.fundSnapshot,'transfer-out',cash,'删除钱包：转入累计结余',timestamp,{transferId:event.transferId,targetFundId:'savings',targetFundName:'累计结余',reason:'wallet-archive',sourceCycleId:cycle.id})}
+      else sourceTransfer.amountCents=cash;
+      if(!transfer){const id=`archive-${event.fundId}-${event.transferId}`;transfer={id,kind:'surplus-in',date:dateISO(new Date(timestamp)),timestamp,amountCents:cash,note:`${event.fundName} 删除后转入累计结余`,sourceFundId:event.fundId,sourceFundName:event.fundName,sourceCycleId:cycle.id,settlementCycleId:cycle.id,transferId:event.transferId,reason:'wallet-archive'};state.savingsEntries.push(transfer);event.savingsTransferId=id}
+      else transfer.amountCents=cash;
+    }
+  }
+}
+function updateDeletedFundBudgetsAfterEntryRemoval(){reconcileDeletedFundBudgets()}
 function deleteFund(id){
   const fund=getFund(id);if(!fund)return;const linked=fundDeletionLinks(id);$('#deleteFundId').value=id;$('#deleteFundName').textContent=fund.name;$('#deleteFundRules').textContent=`关联未来计划：计划消费 ${linked.rules.length} 条，旧计划 ${linked.plans.length} 条。`;
-  $('#deleteFundPending').textContent=`关联待确认账单：新计划 ${linked.occurrences.length} 笔，旧账单 ${linked.dues.length} 笔。`;
-  const targets=state.funds.filter(f=>f.id!==id&&!f.disabledAt),balance=fundBalanceAt(fund,Date.now()),canDelete=balance===0;$('#deleteFundBalance').textContent=`当前余额 ${money(balance)}。${canDelete?'余额为 ¥0.00，可以删除。':'需先处理余额，或停用钱包保留。'}本期已分配额度不会因删除或停用而释放。`;
-  $('#deleteFundTarget').innerHTML=targets.map(f=>`<option value="${escapeHTML(f.id)}">${escapeHTML(f.name)}</option>`).join('');$('#deleteFundMode').value=targets.length?'move':'pause';$('#deleteFundMode').disabled=!targets.length;$('#deleteFundForm button[type="submit"]').disabled=!canDelete;$('#disableFundFromDelete').hidden=Boolean(fund.disabledAt);$('#disableFundFromDelete').textContent=fund.disabledAt?'钱包已停用':'停用并保留余额';$('#disableFundFromDelete').disabled=Boolean(fund.disabledAt);$('#deleteFundPlanFields').hidden=false;updateDeleteFundFields();openModal('deleteFundModal');
+  $('#deleteFundPending').textContent=`待确认账单 ${linked.occurrences.length+linked.dues.length} 笔会保留在“账单”页，并与此钱包解绑。`;
+  const balance=fundBalanceAt(fund,Date.now()),deletion=fund.type==='fixed'?fixedFundDeletionSummary(fund):null,canDelete=fund.type==='fixed'?balance>=0:balance===0;
+  $('#deleteFundBalance').textContent=fund.type==='fixed'?`${balance<0?`当前余额 ${money(balance)}，请先处理这笔待处理超支。`:`本期预算 ${money(deletion.allocation)}，已花 ${money(deletion.spent)}；未用预算 ${money(deletion.released)} 退回未分配。实际余额 ${money(balance)} 会转入累计结余。`}已记支出和历史流水保留。`:`当前余额 ${money(balance)} 不会转成工资预算。先记录支出至余额为零，或停用并保留钱包。`;
+  $('#deleteFundMode').value='pause';$('#deleteFundMode').disabled=true;$('#deleteFundForm button[type="submit"]').disabled=!canDelete;$('#disableFundFromDelete').hidden=Boolean(fund.disabledAt);$('#disableFundFromDelete').textContent='停用并保留钱包';$('#disableFundFromDelete').disabled=Boolean(fund.disabledAt);$('#deleteFundPlanFields').hidden=true;updateDeleteFundFields();openModal('deleteFundModal');
+  if(fund.type==='fixed'&&!openCycle()){$('#deleteFundForm button[type="submit"]').disabled=true;$('#deleteFundBalance').textContent='当前没有活动发薪周期，无法计算并退回未用预算。'}
 }
 function commitFundDeletion(){
-  if(storageBlocked)return showToast('保存已暂停，请先导入有效备份以保护原数据');const id=$('#deleteFundId').value,fund=getFund(id),mode=$('#deleteFundMode').value,target=mode==='move'?getFund($('#deleteFundTarget').value):null;if(!fund)return showToast('这个钱包已删除');if(fundBalanceAt(fund,Date.now())!==0)return showToast(`钱包余额为 ${money(fundBalanceAt(fund,Date.now()))}，不能删除。请先处理余额或停用。`);if(!['move','pause'].includes(mode)||mode==='move'&&(!target||target.disabledAt))return showToast('请选择启用中的钱包处理关联计划和账单');
-  const linked=fundDeletionLinks(id),now=Date.now();
-  if(mode==='move'){
-    for(const rule of linked.rules){rule.fundId=target.id;rule.fundName=target.name}
-    for(const occurrence of linked.occurrences){occurrence.fundId=target.id;occurrence.fundName=target.name}
-    for(const plan of linked.plans){plan.fundId=target.id;plan.boundAt=plan.boundAt||now}
-    for(const due of linked.dues){due.fundId=target.id;due.legacyStatus='pending'}
-  }else{
-    for(const rule of linked.rules){rule.active=false;rule.stoppedAt=now}
-    for(const occurrence of linked.occurrences)occurrence.fundId=null;
-    for(const plan of linked.plans){plan.active=false;plan.fundId=null;plan.boundAt=null}
-    for(const due of linked.dues){due.fundId=null;due.legacyStatus='unbound'}
+  const selectedFund=getFund($('#deleteFundId').value);if(selectedFund?.type==='fixed'&&!openCycle())return showToast('当前没有活动发薪周期，无法计算并退回未用预算。');
+  if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');const id=$('#deleteFundId').value,fund=getFund(id);if(!fund)return showToast('这个钱包已删除');const balance=fundBalanceAt(fund,Date.now());if(fund.type==='fixed'&&balance<0)return showToast(`当前余额 ${money(balance)}，请先处理这笔待处理超支。`);if(fund.type!=='fixed'&&balance!==0)return showToast(`当前余额 ${money(balance)} 不会转成工资预算。请先记录支出，或停用并保留钱包。`);
+  const linked=fundDeletionLinks(id),now=Date.now(),cycle=openCycle();
+  if(fund.type==='fixed'&&cycle){
+    const oldAllocation=cycle.allocations?.[id]?.type==='fixed'?cycle.allocations[id].amountCents:fund.allowanceCents,spent=sumExpenses(state.entries.filter(e=>e.fundId===id&&e.timestamp>=cycle.startAt&&e.timestamp<(cycle.endAt??Infinity))),kept=Math.max(0,spent),released=Math.max(0,oldAllocation-kept);
+    cycle.allocations[id]={type:'fixed',amountCents:kept};cycle.surplusExcludedFundIds=[...new Set([...(cycle.surplusExcludedFundIds||[]),id])];
+    recordBudgetAdjustment({kind:'release',reason:'wallet-deletion',fundId:id,fundName:fund.name,originalAllocationCents:oldAllocation,spentCents:spent,amountCents:released,budgetSign:1,deletedAt:now,balanceAtDeletionCents:balance,fundSnapshot:{id:fund.id,name:fund.name,type:fund.type,color:fund.color,allowanceCents:fund.allowanceCents},note:`删除钱包：未用预算 ${money(released)} 退回未分配`});
+    const releaseEvent=cycle.budgetAdjustments?.[cycle.budgetAdjustments.length-1];if(balance>0&&releaseEvent){releaseEvent.transferId=newId();const transferId=releaseEvent.transferId;addLedger(fund,'transfer-out',balance,'删除钱包：转入累计结余',now,{transferId,targetFundId:'savings',targetFundName:'累计结余',reason:'wallet-archive',sourceCycleId:cycle.id});const savingsId=`archive-${fund.id}-${transferId}`;state.savingsEntries.push({id:savingsId,kind:'surplus-in',date:dateISO(new Date(now)),timestamp:now,amountCents:balance,note:`${fund.name} 删除后转入累计结余`,sourceFundId:fund.id,sourceFundName:fund.name,sourceCycleId:cycle.id,settlementCycleId:cycle.id,transferId,reason:'wallet-archive'});releaseEvent.savingsTransferId=savingsId}
   }
-  state.funds=state.funds.filter(f=>f.id!==id);persist();closeModal('deleteFundModal');showToast(mode==='move'?'钱包已删除；计划和待确认账单已转交，历史流水保留':'钱包已删除；未来计划已暂停，待确认账单仍可稍后处理');
+  for(const rule of linked.rules){rule.active=false;rule.stoppedAt=now;delete rule.disabledByFundAt}
+  for(const occurrence of linked.occurrences)occurrence.fundId=null;
+  for(const plan of linked.plans){plan.active=false;plan.fundId=null;plan.boundAt=null}
+  for(const due of linked.dues){due.fundId=null;due.legacyStatus='unbound'}
+  state.funds=state.funds.filter(f=>f.id!==id);persist();closeModal('deleteFundModal');showToast(fund.type==='fixed'?'钱包已删除；预算退回未分配，余额转入累计结余':'钱包已删除；历史流水保留，关联计划已暂停');
 }
-function openRule(rule=null){const fund=getFund(detailFundId);if(!fund)return showToast('请先从钱包明细进入');if(fund.disabledAt)return showToast('钱包已停用，恢复后才能添加或编辑计划');if(rule?.frequency==='once'&&state.occurrences.some(o=>o.ruleId===rule.id))return showToast('这笔一次性计划已生成待确认账单，不能再改期；请新建一条计划');$('#ruleForm').reset();$('#ruleId').value=rule?.id||'';$('#ruleModalTitle').textContent=rule?'编辑计划消费':'添加计划消费';$('#ruleName').value=rule?.name||'';$('#ruleFrequency').value=rule?.frequency||'month';$('#ruleAmount').value=rule?(rule.amountCents/100).toFixed(2):'';const due=rule?new Date(rule.nextDueAt):new Date();$('#ruleFirstDue').value=dateISO(due);$('#ruleHour').value=rule?due.getHours():9;openModal('ruleModal')}
+function openRule(rule=null){const fund=getFund(detailFundId);if(!fund)return showToast('请先选择一个钱包');if(fund.disabledAt)return showToast('钱包已停用，恢复后才能添加或编辑计划');if(rule?.frequency==='once'&&state.occurrences.some(o=>o.ruleId===rule.id))return showToast('这笔一次性计划已生成待确认账单，不能再改期；请新建一条计划');$('#ruleForm').reset();$('#ruleId').value=rule?.id||'';$('#ruleModalTitle').textContent=rule?'编辑计划消费':'添加计划消费';$('#ruleName').value=rule?.name||'';$('#ruleFrequency').value=rule?.frequency||'month';$('#ruleAmount').value=rule?(rule.amountCents/100).toFixed(2):'';const due=rule?new Date(rule.nextDueAt):new Date();$('#ruleFirstDue').value=dateISO(due);$('#ruleHour').value=rule?due.getHours():9;openModal('ruleModal')}
 function persistRule(rule){state.rules.push(rule);reconcileScheduledCycles();reconcileDueRules();persist();closeModal('ruleModal');renderWalletDetail();showToast('计划消费已保存')}
 function saveRule(){
   if(storageBlocked)return showToast('保存已暂停，请先导入有效备份以保护原数据');const fund=getFund(detailFundId),id=$('#ruleId').value,name=$('#ruleName').value.trim(),frequency=$('#ruleFrequency').value,amount=centsInput('#ruleAmount'),date=$('#ruleFirstDue').value,hour=Number($('#ruleHour').value);
@@ -794,7 +874,7 @@ function bindLegacyPlan(id,fundId){
   const rule={id:newId(),fundId:fund.id,fundName:fund.name,name:plan.name,amountCents:plan.amountCents,frequency:dummy.frequency,firstDueAt:first.getTime(),nextDueAt:first.getTime(),anchorDay:dummy.anchorDay,anchorMonth:dummy.anchorMonth,anchorHour:9,active:Boolean(plan.active),createdAt:Date.now(),legacySourceId:plan.id};state.rules.push(rule);plan.fundId=fund.id;plan.boundAt=Date.now();for(const due of state.legacyDues)if(due.subscriptionId===plan.id&&due.legacyStatus==='unbound'){due.fundId=fund.id;due.legacyStatus='pending'}persist();renderWalletDetail();showToast('已选择付款钱包；历史待付款仍需逐笔确认')
 }
 function bindLegacyDue(id,fundId){const due=state.legacyDues.find(d=>d.id===id),fund=getFund(fundId);if(!due||!fund)return;if(fund.disabledAt)return showToast('目标钱包已停用，请先恢复钱包后再选择付款钱包');due.fundId=fund.id;due.legacyStatus='pending';persist();renderWalletDetail();showToast('已选择付款钱包；请确认实际付款后再记账')}
-function openPending(id,legacy=false){const row=legacy?state.legacyDues.find(d=>d.id===id&&['pending','unbound'].includes(d.legacyStatus)):state.occurrences.find(item=>item.id===id&&['pending','exception'].includes(item.status));if(!row)return;$('#pendingRecordId').value=id;$('#pendingRecordType').value=legacy?'legacy':'occurrence';const rule=legacy?null:state.rules.find(r=>r.id===row.ruleId),name=legacy?row.subscriptionName:(rule?.name||row.fundName||'计划消费'),defaultDate=dateISO(new Date()),select=$('#pendingFund'),funds=state.funds.filter(f=>!f.disabledAt),preferred=funds.some(f=>f.id===(row.fundId||detailFundId))?(row.fundId||detailFundId):funds[0]?.id;$('#pendingTitle').textContent=`确认 ${name}`;select.innerHTML=funds.length?funds.map(f=>`<option value="${escapeHTML(f.id)}" ${f.id===preferred?'selected':''}>${escapeHTML(f.name)}</option>`).join(''):'<option value="">请先启用或添加钱包</option>';select.disabled=!funds.length;$('#pendingForm button[type="submit"]').disabled=!funds.length;$('#pendingAmount').value=(row.amountCents/100).toFixed(2);$('#pendingDate').value=defaultDate;openModal('pendingModal')}
+function openPending(id,legacy=false){const row=legacy?state.legacyDues.find(d=>d.id===id&&['pending','unbound'].includes(d.legacyStatus)):state.occurrences.find(item=>item.id===id&&['pending','exception'].includes(item.status));if(!row)return;$('#pendingRecordId').value=id;$('#pendingRecordType').value=legacy?'legacy':'occurrence';const rule=legacy?null:state.rules.find(r=>r.id===row.ruleId),name=legacy?row.subscriptionName:(rule?.name||row.fundName||'计划消费'),defaultDate=dateISO(new Date()),select=$('#pendingFund'),funds=state.funds.filter(f=>!f.disabledAt),preferred=funds.some(f=>f.id===row.fundId)?row.fundId:'';$('#pendingTitle').textContent=`确认 ${name}`;select.innerHTML=funds.length?`${preferred?'':'<option value="" disabled selected>请选择钱包</option>'}${funds.map(f=>`<option value="${escapeHTML(f.id)}" ${f.id===preferred?'selected':''}>${escapeHTML(f.name)}</option>`).join('')}`:'<option value="">请先启用或添加钱包</option>';select.disabled=!funds.length;$('#pendingForm button[type="submit"]').disabled=!preferred;$('#pendingAmount').value=(row.amountCents/100).toFixed(2);$('#pendingDate').value=defaultDate;openModal('pendingModal')}
 function resolvePending(){
   if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');const id=$('#pendingRecordId').value,type=$('#pendingRecordType').value,fund=getFund($('#pendingFund').value),amount=centsInput('#pendingAmount'),date=$('#pendingDate').value;if(!fund||fund.disabledAt||amount==null||amount<=0||!validDateString(date)||date>dateISO(new Date()))return showToast('请检查启用中的钱包、实际金额和付款日期');
   const occurrence=type==='occurrence'?state.occurrences.find(o=>o.id===id&&['pending','exception'].includes(o.status)):null,due=type==='legacy'?state.legacyDues.find(d=>d.id===id&&['pending','unbound'].includes(d.legacyStatus)):null;if(!occurrence&&!due)return showToast('这笔待确认账单已处理');
@@ -808,9 +888,8 @@ function cancelPending(){
 }
 function cancelOccurrence(id,legacy=false){if(storageBlocked)return showToast('保存已暂停，请先导入有效备份');const row=legacy?state.legacyDues.find(d=>d.id===id):state.occurrences.find(o=>o.id===id);if(!row)return;askConfirm('取消这笔待确认账单？','取消后不会生成支出，也不会影响余额。',()=>{if(legacy){row.legacyStatus='cancelled';const payment=state.payments.find(p=>p.id===row.id);if(payment)payment.status='cancelled'}else{row.status='cancelled';row.cancelledAt=Date.now()}persist();showToast('待确认账单已取消')},'取消账单')}
 function renderWalletSchedules(fund){
-  const rules=state.rules.filter(r=>r.fundId===fund.id);$('#ruleList').innerHTML=rules.length?rules.map(r=>{const pending=state.occurrences.filter(o=>o.ruleId===r.id&&(o.status==='pending'||o.status==='exception'));return `<article class="subscription-card"><div class="subscription-main"><strong>${escapeHTML(r.name)}</strong><span>${r.frequency==='once'?'一次性':r.frequency==='month'?'每月':r.frequency==='quarter'?'每季度':'每年'} ${money(r.amountCents)} · ${r.active?`下次到期 ${scheduleLabel(r.nextDueAt)}`:'已停用'}${pending.length?` · 待确认 ${pending.length} 笔，共 ${money(pending.reduce((s,o)=>s+o.amountCents,0))}`:''}</span></div><div class="subscription-actions">${r.frequency==='once'&&state.occurrences.some(o=>o.ruleId===r.id)?'':`<button type="button" data-edit-rule="${escapeHTML(r.id)}">编辑</button>`}${r.active?`<button type="button" class="danger-action" data-stop-rule="${escapeHTML(r.id)}">停用</button>`:''}</div></article>`}).join(''):'<div class="empty-state">当前钱包没有计划消费。</div>';
-  const orphanRules=state.rules.filter(r=>!getFund(r.fundId)),plans=state.legacySubscriptions.filter(s=>!s.boundAt&&!state.rules.some(r=>r.legacySourceId===s.id));const dues=state.legacyDues.filter(d=>['unbound','pending'].includes(d.legacyStatus)&&(!d.fundId||d.fundId===fund.id));$('#legacyList').innerHTML=[...orphanRules.map(r=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(r.name)}</strong><span>原钱包已删除 · ${r.frequency==='once'?'一次性':r.frequency==='month'?'每月':r.frequency==='quarter'?'每季度':'每年'} ${money(r.amountCents)} · 已暂停；下次到期时间保留。</span></div><button type="button" class="primary-button compact" data-rebind-rule="${escapeHTML(r.id)}" data-wallet="${escapeHTML(fund.id)}">使用这个钱包付款</button></article>`),...plans.map(s=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(s.name)}</strong><span>旧计划 · ${s.frequency==='month'?'每月':'每年'} ${money(s.amountCents)} · 下次计划 ${shortDate(s.nextDue)}。</span></div><button type="button" class="primary-button compact" data-bind-legacy-plan="${escapeHTML(s.id)}" data-wallet="${escapeHTML(fund.id)}">使用这个钱包付款</button></article>`),...dues.map(d=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(d.subscriptionName)}</strong><span>旧待确认账单 · ${shortDate(d.dueDate)} · ${money(d.amountCents)} · ${d.fundId?'已选择钱包':'待选择钱包'}</span></div><button type="button" class="primary-button compact" data-handle-pending="${escapeHTML(d.id)}" data-pending-type="legacy">确认账单</button><button type="button" class="secondary-button compact" data-cancel-legacy="${escapeHTML(d.id)}">取消</button></article>`)].join('')||'<div class="empty-state">没有旧计划或待确认账单。</div>';
-  const pendingRows=state.occurrences.filter(o=>(o.status==='pending'||o.status==='exception')&&(!o.fundId||o.fundId===fund.id));$('#exceptionList').innerHTML=pendingRows.length?pendingRows.map(o=>`<article class="subscription-card pending-card"><div class="subscription-main"><strong>${escapeHTML(state.rules.find(r=>r.id===o.ruleId)?.name||o.fundName||'计划消费')}</strong><span>${scheduleLabel(o.dueAt)} · 尚未扣款 · ${money(o.amountCents)}</span></div><button type="button" class="primary-button compact" data-handle-pending="${escapeHTML(o.id)}">确认账单</button><button type="button" class="secondary-button compact" data-cancel-occurrence="${escapeHTML(o.id)}">取消</button></article>`).join(''):'<div class="empty-state">没有待确认账单。</div>';
+  const rules=state.rules.filter(r=>r.fundId===fund.id);$('#ruleList').innerHTML=rules.length?rules.map(r=>`<article class="subscription-card"><div class="subscription-main"><strong>${escapeHTML(r.name)}</strong><span>${r.frequency==='once'?'一次性':r.frequency==='month'?'每月':r.frequency==='quarter'?'每季度':'每年'} ${money(r.amountCents)} · ${r.active?`下次到期 ${scheduleLabel(r.nextDueAt)}`:'已停用'}</span></div><div class="subscription-actions">${r.frequency==='once'&&state.occurrences.some(o=>o.ruleId===r.id)?'':`<button type="button" data-edit-rule="${escapeHTML(r.id)}">编辑</button>`}${r.active?`<button type="button" class="danger-action" data-stop-rule="${escapeHTML(r.id)}">停用</button>`:''}</div></article>`).join(''):'<div class="empty-state">还没有定期扣费。</div>';
+  const orphanRules=state.rules.filter(r=>!getFund(r.fundId)),plans=state.legacySubscriptions.filter(s=>!s.boundAt&&!state.rules.some(r=>r.legacySourceId===s.id));const unassigned=[...orphanRules.map(r=>`<article class="subscription-card"><div class="subscription-main"><strong>${escapeHTML(r.name)}</strong><span>原钱包已删除 · 已暂停，原到期时间保留</span></div><button type="button" class="text-action" data-rebind-rule="${escapeHTML(r.id)}" data-wallet="${escapeHTML(fund.id)}">设为此钱包</button></article>`),...plans.map(s=>`<article class="subscription-card"><div class="subscription-main"><strong>${escapeHTML(s.name)}</strong><span>旧计划 · ${s.frequency==='month'?'每月':'每年'} ${money(s.amountCents)} · ${shortDate(s.nextDue)}</span></div><button type="button" class="text-action" data-bind-legacy-plan="${escapeHTML(s.id)}" data-wallet="${escapeHTML(fund.id)}">设为此钱包</button></article>`)];$('#orphanPlansSection').hidden=!unassigned.length;$('#legacyList').innerHTML=unassigned.join('');
 }
 function updateAccountSetupFields(){const medical=$('#accountType').value==='medical';$('#accountDefaultCompanyField').hidden=medical;$('#accountDefaultCompany').disabled=medical;$('#accountDefaultCompany').required=false;$('#accountDefaultPersonal').closest('label').querySelector('.field-label').textContent=medical?'每月医保账户入账':'每月个人公积金入账'}
 function openAccountSetup(account=null){const type=account?.type||'provident',personal=type==='medical'?(account?.monthlyMedicalCents??0):(account?.monthlyPersonalCents??account?.defaultPersonalCents??0);$('#accountSetupForm').reset();$('#accountSetupId').value=account?.id||'';$('#accountSetupTitle').textContent=account?'管理账户':'添加公积金或医保';$('#accountType').value=type;$('#accountType').disabled=Boolean(account);$('#accountName').value=account?.name||(type==='medical'?'医保个人账户':'住房公积金');$('#accountOpening').value='0';$('#accountOpening').disabled=Boolean(account);$('#accountDefaultPersonal').value=(personal/100).toFixed(2);$('#accountDefaultCompany').value=((account?.monthlyCompanyCents??account?.defaultCompanyCents??0)/100).toFixed(2);updateAccountSetupFields();openModal('accountSetupModal')}
@@ -835,16 +914,16 @@ function saveAccountEntry(){
 }
 function refreshAccountDetail(){const id=$('#accountDetailModal').dataset.accountId,account=getAccount(id);if(!account)return;$('#accountDetailTitle').textContent=account.name;$('#accountDetailBalance').innerHTML=`<span>当前余额</span><strong>${money(accountBalanceAt(account))}</strong><small>${account.type==='provident'?'公积金账户':'医保个人账户'}</small>`;const rows=state.accountEntries.filter(e=>e.accountId===id).sort((a,b)=>b.timestamp-a.timestamp);$('#accountDetailRecords').innerHTML=rows.map(e=>{const credit=e.kind==='provident-credit'||e.kind==='medical-credit',origin=e.scheduledKey?(e.correctedAt?'自动登记 · 已修正':'自动登记'):'手动登记';return `<div class="record-row"><span class="record-icon paid-icon">${e.kind==='expense'?'−':e.kind==='transfer-out'?'↗':'+'}</span><div class="record-main"><div class="record-title">${escapeHTML(e.note||accountDetailKind(e))}</div><div class="record-sub">${shortDate(e.date)} ${new Date(e.timestamp).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})}${credit?` · ${origin}`:''}${e.kind==='provident-credit'?` · 个人 ${money(e.personalCents)} + 单位 ${money(e.companyCents)}`:''}</div></div><strong class="record-amount ${e.kind==='expense'||e.kind==='transfer-out'?'expense-amount':'positive-amount'}">${e.kind==='expense'||e.kind==='transfer-out'?'−':'+'}${money(e.amountCents)}</strong></div>`}).join('')||'<div class="empty-state">还没有账户流水。</div>'}
 function openAccountDetail(id){const account=getAccount(id);if(!account)return;$('#accountDetailModal').dataset.accountId=id;refreshAccountDetail();openModal('accountDetailModal')}
-function openWalletDetail(id){const fund=getFund(id);if(!fund)return;detailFundId=id;$('#detailTitle').textContent=fund.name;$('#detailPeriod').value='month';$('#detailCycle').hidden=true;$('#addRuleBtn').hidden=Boolean(fund.disabledAt);renderWalletDetail();openModal('detailModal')}
+function openWalletDetail(id){const fund=getFund(id);if(!fund)return;detailFundId=id;$('#detailTitle').textContent=fund.name;$('#detailPeriod').value='month';$('#detailCycle').hidden=true;renderWalletDetail();openModal('detailModal')}
+function openWalletPlans(id){const fund=getFund(id);if(!fund)return;detailFundId=id;$('#walletPlansTitle').textContent=`${fund.name} · 定期扣费`;$('#addRuleBtn').hidden=Boolean(fund.disabledAt);renderWalletSchedules(fund);openModal('walletPlansModal')}
 function renderWalletDetail(){
-  const fund=getFund(detailFundId);if(!fund)return;const mode=$('#detailPeriod').value,now=Date.now();let startAt,endAt=now+1,cycle=null;
-  renderWalletSchedules(fund);
+  const fund=getFund(detailFundId);if(!fund)return;if($('#walletPlansModal').classList.contains('open')){renderWalletSchedules(fund);return}const mode=$('#detailPeriod').value,now=Date.now();let startAt,endAt=now+1,cycle=null;
   $('#detailCycle').hidden=mode!=='history';
   if(mode==='month'){const r=currentCycleRange();startAt=r.startAt;endAt=r.endAt===Infinity?now+1:r.endAt}
   else if(mode==='history'){
     const cycles=reportCycles().filter(c=>c.startAt<(openCycle()?.startAt||Infinity)).sort((a,b)=>b.startAt-a.startAt),select=$('#detailCycle'),previous=select.value;select.innerHTML=cycles.map(c=>`<option value="${c.id}">${escapeHTML(cycleOptionText(c))}</option>`).join('');if(!cycles.length){$('#detailBalance').textContent='暂无历史发薪周期';$('#detailRecords').innerHTML='<div class="empty-state">还没有历史周期。</div>';return}select.value=cycles.some(c=>c.id===previous)?previous:cycles[0].id;cycle=cycles.find(c=>c.id===select.value);const r=rangeForCycle(cycle);startAt=r.startAt;endAt=r.endAt;
   }else{const earliest=entriesForFund(fund.id).reduce((m,e)=>Math.min(m,e.timestamp),fund.createdAt);startAt=earliest}
-  const rows=entriesForFund(fund.id).filter(e=>e.timestamp>=startAt&&e.timestamp<endAt);$('#detailBalance').innerHTML=`<span>${mode==='history'?'期末余额':'当前余额'}</span><strong>${money(fundBalanceAt(fund,endAt-1))}</strong><small>${mode==='month'?'本月':mode==='all'?'全部记录':'历史周期'} · ${money(sumExpenses(rows,fund.id))} 支出</small>`;$('#detailRecords').innerHTML=renderEntries(rows,true);
+  const rows=allReportEntries().filter(e=>e.fundId===fund.id&&e.timestamp>=startAt&&e.timestamp<endAt);$('#detailBalance').innerHTML=`<span>${mode==='history'?'期末余额':'当前余额'}</span><strong>${money(fundBalanceAt(fund,endAt-1))}</strong><small>${mode==='month'?'本月':mode==='all'?'全部记录':'历史周期'} · ${money(sumExpenses(rows,fund.id))} 支出</small>`;$('#detailRecords').innerHTML=renderEntries(rows,true);
 }
 
 function saveSalarySettings(){
@@ -857,7 +936,7 @@ function saveSalarySettings(){
   $('#salaryForm').dataset.loaded='false';$('#salaryForm').dataset.dirty='false';persist();showToast(scheduleChanged?'工资和发薪时间已更新':'月到手工资已更新');
 }
 function restoreSettings(message){$('#salaryForm').dataset.loaded='false';renderSettings(true);showToast(message)}
-function openRefresh(){const next=nextScheduledAt();$('#refreshNextText').textContent=`下次自动刷新仍为 ${scheduleLabel(next)}，手动操作不会修改发薪日设置。`;$('#refreshPreview').textContent='选择一种操作，先查看各类余额变化，再决定是否确认。';openModal('refreshModal')}
+function openRefresh(){const next=nextScheduledAt();$('#refreshNextText').textContent=`下次自动刷新：${scheduleLabel(next)}`;$('#refreshPreview').textContent='选择一种刷新方式，检查变化后再确认。';openModal('refreshModal')}
 function startNewCycle(origin='manual'){
   if(storageBlocked)return showToast('保存已暂停，请先导入有效备份以保护原数据');
   const old=openCycle(),now=Math.max(Date.now(),(old?.startAt||0)+1),cycle=makeCycle(now,origin);if(old){sweepFixedSurplus(old,now,cycle.id);old.endAt=now}state.cycles.push(cycle);addCycleStartEvents(cycle,now,false);persist();closeModal('refreshModal');showToast('已开始新周期；每月预算剩余金额已转入累计结余，下次仍按发薪时间刷新。');
@@ -911,7 +990,7 @@ function applyImportText(text){
     askConfirm('导入备份并替换当前数据？',`备份包含 ${imported.funds.length} 个钱包、${imported.entries.length} 条钱包账目、${imported.rules.length} 条计划消费和 ${imported.accounts.length} 个账户。导入后会替换当前账本。`,()=>{
       const wasOnboarding=onboardingNeeded,wasBlocked=storageBlocked;state=imported;storageBlocked=false;storageWritable=true;
       $('#salaryForm').dataset.loaded='false';$('#salaryForm').dataset.dirty='false';reconcileClosedCycleSurpluses();reconcileScheduledCycles();reconcileDueRules();const saved=persist(false);closeModal('confirmModal',true);
-      if(saved){onboardingNeeded=false;clearSetupDraft();showOnboarding(false);render();showToast('备份已导入')}
+      if(saved){onboardingNeeded=false;clearSetupDraft();$('#salaryForm').dataset.loaded='false';$('#salaryForm').dataset.dirty='false';renderSettings(true);showOnboarding(false);render();showToast('备份已导入')}
       else{onboardingNeeded=wasOnboarding;storageBlocked=wasBlocked||storageBlocked;showOnboarding(wasOnboarding);render()}
     },'导入');
   }catch(error){showToast(`备份无效，现有数据未更改：${error.message||'请检查文件内容'}`)}
@@ -936,7 +1015,7 @@ function bindEvents(){
   $('#setupStep1Next').addEventListener('click',()=>{try{readSetupSalary();setupDraft.includeWallet=true;showSetupStep(2)}catch(error){showSetupMessage(error.message||'请检查填写内容',true)}});
   $('#setupStep2Next').addEventListener('click',()=>advanceSetup(true));$('#setupStep2Later').addEventListener('click',()=>advanceSetup(false));
   $('#setupBackTo1').addEventListener('click',()=>showSetupStep(1));$('#setupBackTo2').addEventListener('click',()=>showSetupStep(2));$('#setupStart').addEventListener('click',startSetup);$('#onboardingImportBtn').addEventListener('click',requestImport);
-  $('#addWalletBtn').addEventListener('click',()=>openFund());$('#addAccountBtn').addEventListener('click',()=>openAccountSetup());
+  $('#addWalletBtn').addEventListener('click',()=>openFund());$('#addAccountBtn').addEventListener('click',()=>openAccountSetup());$('#recordCurrentBalancesBtn').addEventListener('click',openCurrentBalanceEntry);$('#balanceEntryForm').addEventListener('submit',event=>{event.preventDefault();saveCurrentBalances()});
   $('#fundType').addEventListener('change',toggleFundFields);
   $('#fundForm').addEventListener('submit',event=>{event.preventDefault();createFund()});
   $('#entryForm').addEventListener('submit',event=>{event.preventDefault();if(storageBlocked)return showToast('保存已暂停，请先导入有效备份以保护原数据');const amount=centsInput('#entryAmount'),kind=$('#entryForm').dataset.kind||'expense',note=$('#entryNote').value.trim(),timestamp=Date.now();if(amount==null||amount<=0)return showToast('请输入大于 0 的有效金额');if(kind==='surplus-expense'){const balance=savingsBalanceAt(timestamp);if(amount>balance)return showToast('支出金额不能超过累计结余可用余额');state.savingsEntries.push({id:newId(),kind:'expense',date:dateISO(new Date(timestamp)),timestamp,amountCents:amount,note:note||'累计结余支出'});}else{const fund=getFund($('#entryFund').value);if(!fund)return showToast('请选择有效的钱包');if(kind==='expense'&&fund.type==='increment'&&amount>fundBalanceAt(fund,timestamp))return showToast('支出金额不能超过长期储蓄可用余额');addLedger(fund,kind,amount,note||(kind==='topup'?'储值卡充值':''),timestamp)}persist();closeModal('entryModal');showToast(kind==='topup'?'充值已记录':'记下了这笔支出')});
@@ -944,7 +1023,7 @@ function bindEvents(){
   $('#refreshNowBtn').addEventListener('click',openRefresh);
   $$('.refresh-option').forEach(button=>button.addEventListener('click',()=>{const kind=button.dataset.refreshKind, title=kind==='new'?'确认开始新周期？':'确认重置本周期？',preview=describeRefresh(kind);$('#refreshPreview').textContent=preview;askConfirm(title,preview,()=>kind==='new'?startNewCycle('manual'):resetCurrentCycle(),kind==='new'?'开始新周期':'重置额度')}));
   $('#reportTabs').addEventListener('click',event=>{const button=event.target.closest('[data-report]');if(!button)return;selectedReport=button.dataset.report;selectedDay='';if(selectedReport==='month')selectedCycleId=openCycle()?.id||'';if(selectedReport==='history'){const past=reportCycles().filter(c=>c.startAt<(openCycle()?.startAt||Infinity));selectedCycleId=past.at(-1)?.id||''}if(selectedReport==='year')selectedYear=new Date().getFullYear();renderReports()});
-  $('#reportContextSelect').addEventListener('change',event=>{if(selectedReport==='year'){selectedYear=Number(event.target.value);selectedReport='year'}else selectedCycleId=event.target.value;selectedDay='';renderReports()});
+  $('#reportContextSelect').addEventListener('change',event=>{if(selectedReport==='year'){selectedYear=Number(event.target.value);selectedReport='year'}else selectedCycleId=event.target.value;selectedDay='';renderReports()});$('#reportContextButton').addEventListener('click',()=>openSelectPicker($('#reportContextSelect'),true));
   $('#reportFundFilter').addEventListener('change',renderReports);$('#clearDayFilter').addEventListener('click',()=>{selectedDay='';renderReports()});
   $('#timelineList').addEventListener('click',event=>{const day=event.target.closest('[data-day-filter]'),month=event.target.closest('[data-payroll-month]');if(day){selectedDay=selectedDay===day.dataset.dayFilter?'':day.dataset.dayFilter;renderReports()}else if(month){selectedMonthIndex=Number(month.dataset.payrollMonth);selectedReport='paymonth';selectedYear=selectedYear;selectedDay='';renderReports()}});
   $('#walletBreakdown').addEventListener('click',event=>{const button=event.target.closest('[data-breakdown-fund]');if(button){$('#reportFundFilter').value=button.dataset.breakdownFund;renderReports()}});
@@ -953,6 +1032,7 @@ function bindEvents(){
     if(target.dataset.walletId)openEntry(target.dataset.walletId);
     else if(target.dataset.topupWallet)openEntry(target.dataset.topupWallet,'topup');
     else if(target.dataset.walletDetail)openWalletDetail(target.dataset.walletDetail);
+    else if(target.dataset.walletPlans)openWalletPlans(target.dataset.walletPlans);
     else if(target.dataset.deleteFund)deleteFund(target.dataset.deleteFund);
     else if(target.dataset.editFund)openFund(getFund(target.dataset.editFund));
     else if(target.dataset.disableFund)disableFund(target.dataset.disableFund);
@@ -961,7 +1041,7 @@ function bindEvents(){
   document.body.addEventListener('click',event=>{
     const target=event.target.closest('button');if(!target)return;
     if(target.matches('[data-delete-entry]'))return deleteEntry(target.dataset.deleteEntry);
-    if(target.id==='homeTaskLink'){const debt=$('#homeOverdraftSection'),pending=$('#homePendingSection');(debt.hidden?pending:debt).scrollIntoView({behavior:'smooth',block:'start'});return}
+    if(target.id==='homeTaskLink'){const pending=$('#billsPendingSection'),debt=$('#homeOverdraftSection');if(!pending.hidden){showPage('billsPage');requestAnimationFrame(()=>pending.scrollIntoView({behavior:'smooth',block:'start'}))}else{showPage('walletsPage');requestAnimationFrame(()=>debt.scrollIntoView({behavior:'smooth',block:'start'}))}return}
     if(target.matches('[data-overdraft-settle]'))return openOverdraftSettlement(target.dataset.overdraftSettle,target.dataset.overdraftSource);
     if(target.matches('[data-home-open-legacy]')){showPage('walletsPage');const fund=state.funds[0];if(fund)openWalletDetail(fund.id);return}
     if(target.matches('[data-handle-pending]'))return openPending(target.dataset.handlePending,target.dataset.pendingType==='legacy');
@@ -969,6 +1049,7 @@ function bindEvents(){
     if(target.matches('[data-cancel-occurrence]'))return cancelOccurrence(target.dataset.cancelOccurrence,false);
     if(target.matches('[data-cancel-legacy]'))return cancelOccurrence(target.dataset.cancelLegacy,true);
     if(target.matches('[data-balance-transfer]'))return openBalanceTransfer(target.dataset.balanceTransfer);
+    if(target.matches('[data-budget-transfer]'))return openBudgetTransfer(target.dataset.budgetTransfer);
     if(target.matches('[data-transfer-all]'))return transferAllAvailable();
     if(target.matches('[data-extra-deposit]'))return openExtraDeposit(target.dataset.extraDeposit);
     if(target.matches('[data-savings-expense]'))return openSurplusExpense();
@@ -985,15 +1066,19 @@ function bindEvents(){
     if(target.matches('[data-skip-legacy-due]'))return skipLegacyDue(target.dataset.skipLegacyDue);
   });
   $('#detailPeriod').addEventListener('change',renderWalletDetail);$('#detailCycle').addEventListener('change',renderWalletDetail);
+  $('#budgetTransferForm').addEventListener('submit',event=>{event.preventDefault();saveBudgetTransfer()});$('#budgetTransferAmount').addEventListener('input',updateBudgetTransferPreview);$('#budgetTransferTarget').addEventListener('change',updateBudgetTransferPreview);
   $('#addRuleBtn').addEventListener('click',()=>openRule());$('#ruleForm').addEventListener('submit',event=>{event.preventDefault();saveRule()});
   $('#accountSetupForm').addEventListener('submit',event=>{event.preventDefault();saveAccountSetup()});$('#accountType').addEventListener('change',updateAccountSetupFields);
   $('#accountEntryForm').addEventListener('submit',event=>{event.preventDefault();saveAccountEntry()});$('#accountAction').addEventListener('change',updateAccountEntryFields);$('#accountCreditMode').addEventListener('change',updateAccountCreditPreview);['#accountPersonalAmount','#accountCompanyAmount','#accountMedicalAmount'].forEach(id=>$(id).addEventListener('input',updateAccountCreditPreview));
-  $('#pendingForm').addEventListener('submit',event=>{event.preventDefault();resolvePending()});$('#transferForm').addEventListener('submit',event=>{event.preventDefault();saveBalanceTransfer()});$('#extraDepositForm').addEventListener('submit',event=>{event.preventDefault();saveExtraDeposit()});$('#deleteFundForm').addEventListener('submit',event=>{event.preventDefault();commitFundDeletion()});$('#deleteFundMode').addEventListener('change',updateDeleteFundFields);$('#overdraftSettleForm').addEventListener('submit',event=>{event.preventDefault();saveOverdraftSettlement()});$('#disableFundFromDelete').addEventListener('click',()=>disableFund($('#deleteFundId').value));
+  $('#pendingForm').addEventListener('submit',event=>{event.preventDefault();resolvePending()});$('#pendingFund').addEventListener('change',()=>{$('#pendingForm button[type="submit"]').disabled=!$('#pendingFund').value});$('#transferForm').addEventListener('submit',event=>{event.preventDefault();saveBalanceTransfer()});$('#extraDepositForm').addEventListener('submit',event=>{event.preventDefault();saveExtraDeposit()});$('#deleteFundForm').addEventListener('submit',event=>{event.preventDefault();commitFundDeletion()});$('#deleteFundMode').addEventListener('change',updateDeleteFundFields);$('#overdraftSettleForm').addEventListener('submit',event=>{event.preventDefault();saveOverdraftSettlement()});$('#disableFundFromDelete').addEventListener('click',()=>disableFund($('#deleteFundId').value));
   $('#confirmAccept').addEventListener('click',()=>{const action=confirmAction;confirmAction=null;closeModal('confirmModal');if(action)action()});
+  $('#selectPickerList').addEventListener('click',event=>{const button=event.target.closest('[data-picker-value]');if(button)chooseSelectPickerValue(button.dataset.pickerValue)});$('[data-picker-close]').addEventListener('click',()=>closeModal('selectPickerBackdrop'));
   $('#backupBtn').addEventListener('click',exportData);$('#importBtn').addEventListener('click',requestImport);$('#importFile').addEventListener('change',event=>importDataFile(event.target.files[0]));
   $$('.color-options').forEach(container=>container.addEventListener('click',event=>{const button=event.target.closest('[data-color]');if(!button)return;selectedColor=button.dataset.color;$$('.color-choice',container).forEach(item=>item.classList.toggle('selected',item.dataset.color===selectedColor))}));
   $$('[data-close]').forEach(button=>button.addEventListener('click',()=>closeModal(button.dataset.close)));
   $$('.modal-backdrop').forEach(backdrop=>backdrop.addEventListener('click',event=>{if(event.target===backdrop)closeModal(backdrop.id)}));
+  document.addEventListener('click',event=>{const select=event.target.closest?.('select');if(!select||select.hidden||select.classList.contains('type-native-select'))return;event.preventDefault();event.stopImmediatePropagation();openSelectPicker(select)},true);
+  document.addEventListener('keydown',event=>{const select=event.target.closest?.('select');if(!select||select.hidden||select.classList.contains('type-native-select')||!['Enter',' ','ArrowDown'].includes(event.key))return;event.preventDefault();event.stopImmediatePropagation();openSelectPicker(select)},true);
   document.addEventListener('keydown',event=>{if(event.key==='Escape')$$('.modal-backdrop.open').forEach(modal=>closeModal(modal.id))});
 }
 

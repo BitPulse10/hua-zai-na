@@ -15,7 +15,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 依赖已预先缓存时可加 `-Offline`，避免 Gradle 检查网络元数据。
 
-正式 APK 使用稳定包名 `cn.liuyibi.budget.offline`，可与旧版 `cn.liuyibi.budget` 并存。首次运行会在 `local-signing/` 创建持久 release keystore，并在被 Git 忽略的 `signing.properties` 保存本地签名设置。每次构建都会要求 release 签名、运行 Android `apksigner verify`，成功后输出到 `../delivery/hua-zai-na-2.0.2.apk`。把 `local-signing/` 和 `signing.properties` 一并保存在安全备份中；丢失原签名密钥后，后续版本不能作为同一应用更新。
+正式 APK 使用稳定包名 `cn.liuyibi.budget.offline`，可与旧版 `cn.liuyibi.budget` 并存。首次运行会在 `local-signing/` 创建持久 release keystore，并在被 Git 忽略的 `signing.properties` 保存本地签名设置。每次构建都会读取 `app/build.gradle` 中的版本号，要求 release 签名并运行 Android `apksigner verify`，成功后输出到 `../delivery/hua-zai-na-<版本号>.apk`。把 `local-signing/` 和 `signing.properties` 一并保存在安全备份中；丢失原签名密钥后，后续版本不能作为同一应用更新。
 
 也可不生成本地密钥文件，改用 `LIUYIBI_RELEASE_STORE_FILE`、`LIUYIBI_RELEASE_STORE_PASSWORD`、`LIUYIBI_RELEASE_KEY_ALIAS` 和 `LIUYIBI_RELEASE_KEY_PASSWORD` 配置外部 keystore。
 

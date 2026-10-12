@@ -3,6 +3,11 @@ param([switch]$Offline)
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = (Resolve-Path -LiteralPath $PSScriptRoot).Path
+$buildGradle = Get-Content -LiteralPath (Join-Path $projectRoot 'app\build.gradle') -Raw
+if ($buildGradle -notmatch "(?m)^\s*versionName\s+'([^']+)'\s*$") {
+    throw 'Could not read versionName from app/build.gradle.'
+}
+$versionName = $Matches[1]
 $cacheRoot = Join-Path $projectRoot '.build-cache'
 $localProperties = Join-Path $projectRoot 'local.properties'
 $androidSdk = $env:ANDROID_SDK_ROOT
@@ -69,7 +74,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $delivery = Join-Path (Split-Path -Parent $projectRoot) 'delivery'
 New-Item -ItemType Directory -Force -Path $delivery | Out-Null
-$destination = Join-Path $delivery 'hua-zai-na-2.0.2.apk'
+$destination = Join-Path $delivery "hua-zai-na-$versionName.apk"
 Copy-Item -LiteralPath $apk -Destination $destination -Force
 Write-Output "Signed release APK ready: $destination"
 $verification | ForEach-Object { Write-Output $_ }
