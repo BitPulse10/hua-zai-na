@@ -4,6 +4,17 @@ Android 安装包在设备上离线运行网页记账界面。WebView 只从 APK
 
 新装版本没有预置账本。当前账本和首次设置草稿分别以私有原子 JSON 文件保存。旧版 `liuyibi.db` 仅在文件存在时通过 SQLite 只读打开，旧数据库及偏好不会被迁移器修改或删除。
 
+## 从 2.0.x 升级到 2.1.0
+
+2.1.0 改用新的发布签名密钥，包名仍为 `cn.liuyibi.budget.offline`。因为签名与旧版 2.0.x 不同，不能直接覆盖安装，需要先备份再重装：
+
+1. 在旧版“设置”中导出 JSON 备份。
+2. 确认备份已保存到手机共享目录或电脑，能够找到且不是空文件。
+3. 备份确认后，卸载旧版，再安装 2.1.0。
+4. 在新版首次引导或“设置”中导入 JSON，核对钱包和历史记录。
+
+卸载会删除旧应用的本机账本。备份尚未导出或未确认存好时，不要卸载旧版。2.1.0 尚未在实体 Android 设备上验证。
+
 ## 构建正式 APK
 
 需要 Android SDK Platform 35、Build Tools 35 和 JDK 17。先配置 `local.properties` 的 `sdk.dir`，然后执行：
@@ -16,6 +27,8 @@ Set-ExecutionPolicy -Scope Process Bypass
 依赖已预先缓存时可加 `-Offline`，避免 Gradle 检查网络元数据。
 
 正式 APK 使用稳定包名 `cn.liuyibi.budget.offline`，可与旧版 `cn.liuyibi.budget` 并存。首次运行会在 `local-signing/` 创建持久 release keystore，并在被 Git 忽略的 `signing.properties` 保存本地签名设置。每次构建都会读取 `app/build.gradle` 中的版本号，要求 release 签名并运行 Android `apksigner verify`，成功后输出到 `../delivery/hua-zai-na-<版本号>.apk`。把 `local-signing/` 和 `signing.properties` 一并保存在安全备份中；丢失原签名密钥后，后续版本不能作为同一应用更新。
+
+**2.1.0 及之后的正式发布必须继续使用本次生成的签名密钥。** 请安全备份当前 keystore 与签名设置；后续构建不得重新生成或替换密钥，否则用户将再次无法覆盖安装升级。签名文件不得提交到 Git 或随 APK 公开发布。
 
 也可不生成本地密钥文件，改用 `LIUYIBI_RELEASE_STORE_FILE`、`LIUYIBI_RELEASE_STORE_PASSWORD`、`LIUYIBI_RELEASE_KEY_ALIAS` 和 `LIUYIBI_RELEASE_KEY_PASSWORD` 配置外部 keystore。
 
